@@ -1,0 +1,913 @@
+#!/usr/bin/env bash
+
+## Installer functions
+
+array() { json_get "$1[]"; }
+
+boolean() {
+    local var="$1"
+    [[ -n $(echo "$1" | \grep -E "^\.") ]] || var=".vars.$1"
+
+    # I can only anticipate so much here
+    case "$(json_get "$var")" in
+        "enable"|"Enable"|"ENABLE") echo "true" ;;
+        "on"|"On"|"ON") echo "true" ;;
+        "true"|"True"|"TRUE") echo "true" ;;
+        "y"|"Y"|"yes"|"Yes"|"YES") echo "true" ;;
+    esac
+}
+
+check_if_fail() { [[ $1 -eq 0 ]] || err $1 "Something went wrong"; }
+
+err() { ret="$1" && shift; echo -e "\e[31m[-] $@\e[0m"; exit $ret; }
+
+json_get() {
+    while read line; do
+        [[ $line != "null" ]] || continue
+
+        while read replace; do
+            local new="${replace#\{\{\{}"
+            new="${new%\}\}\}}"
+            new="$(var "$new")"
+            line="${line//$replace/$new}"
+        done < <(echo "$line" | \grep -Eo "\{\{\{[^}]+\}\}\}")
+        unset replace
+
+        echo "$line"
+    done < <(cat $config | jq -cMrS "$1" 2>/dev/null); unset line
+}
+
+hash_keys() { json_get "$1|keys[]"; }
+
+info() { echo -e "\e[32m[+] $@\e[0m"; sleep 1; }
+
+var() { json_get ".vars.$1"; }
+
+## Configuration functions
+
+configure_enable_networking() {
+    array ".network.dhcp_network" \
+        >/mnt/etc/systemd/network/dhcp.network
+    check_if_fail $?
+
+    ln -sf ../run/systemd/resolve/resolv.conf /mnt/etc/
+    check_if_fail $?
+
+    run_in_chroot "systemctl enable systemd-networkd.service"
+    run_in_chroot "systemctl enable systemd-resolved.service"
+}
+
+create_users() {
+    while read creds; do
+        local password="${creds#*:}"
+        local username="${creds%%:*}"
+        run_in_chroot "useradd -m -p \"$password\" -U $username"
+
+        # if [[ -n $(boolean "gui") ]]; then
+        #     # TODO autostart tint2 and set wallpaper
+        # fi
+    done < <(array ".users.create"); unset creds
+}
+
+customize() {
+    echo "Recommended actions include:"
+    echo "    - Create new users"
+    echo "    - Set user passwords (if authorized_keys not provided)"
+    echo "    - Change the preferred shell (zsh)"
+    echo "    - Install additional packages"
+    echo "    - Modify config files"
+
+    local ans
+    while :; do
+        read -p "Drop into a shell? (y/N) " ans
+        case "$ans" in
+            "y"|"Y"|"yes"|"Yes") arch-chroot /mnt; break ;;
+            ""|"n"|"N"|"no"|"No") break ;;
+        esac
+    done
+}
+
+enable_multilib() {
+    if [[ -n $(\grep "#\[multilib\]" $1) ]]; then
+        local inc="/etc/pacman.d/mirrorlist"
+        sed -i -r \
+            -e "s/^#(\[multilib\]).*/\\1/" \
+            -e "/^\[multilib\]/!b;n;cInclude = $inc" $1
+        check_if_fail $?
+
+        case "$action" in
+            "install") run_in_chroot "pacman -Syy" ;;
+            "postinstall") sudo pacman -Syy ;;
+        esac
+    fi
+}
+
+install_configure_enable_iptables() {
+    run_in_chroot "pacman --needed --noconfirm -S iptables"
+
+    array ".iptables.iptables_rules" >/mnt/etc/iptables/iptables.rules
+    check_if_fail $?
+
+    array ".iptables.ip6tables_rules" \
+        >/mnt/etc/iptables/ip6tables.rules
+    check_if_fail $?
+
+    chmod 644 /mnt/etc/iptables/{iptables,ip6tables}.rules
+    check_if_fail $?
+
+    if [[ -n $(boolean ".iptables.enable") ]]; then
+        run_in_chroot "systemctl enable {iptables,ip6tables}.service"
+    fi
+}
+
+install_configure_enable_lxdm() {
+    run_in_chroot "pacman --needed --noconfirm -S lxdm"
+
+    while read key; do
+        local val="$(json_get ".lxdm.lxdm_conf.$key")"
+        [[ -n $val ]] || continue
+        sed -i -r "s|^#? ?($key)=.*|\\1=$val|" /mnt/etc/lxdm/lxdm.conf
+        check_if_fail $?
+    done < <(hash_keys ".lxdm.lxdm_conf"); unset key
+
+    if [[ -n $(boolean ".lxdm.enable") ]]; then
+        run_in_chroot "systemctl enable lxdm.service"
+    fi
+}
+
+install_configure_enable_networkmanager() {
+    local -a pkgs=(
+        "network-manager-applet"
+        "networkmanager"
+        "networkmanager-openconnect"
+        "networkmanager-openvpn"
+    )
+    run_in_chroot "pacman --needed --noconfirm -S ${pkgs[@]}"
+    run_in_chroot "systemctl enable NetworkManager.service"
+}
+
+install_configure_enable_ssh() {
+    run_in_chroot "pacman --needed --noconfirm -S openssh"
+
+    while read key; do
+        local val="$(json_get ".ssh.sshd_config.$key")"
+        [[ -n $val ]] || continue
+        sed -i -r "s|^#?($key) .*|\\1 $val|" /mnt/etc/ssh/sshd_config
+        check_if_fail $?
+    done < <(hash_keys ".ssh.sshd_config"); unset key
+
+    if [[ -n $(boolean ".ssh.enable") ]]; then
+        run_in_chroot "systemctl enable sshd.service"
+    fi
+
+    while read key; do
+        local homedir
+        case "$key" in
+            "root") homedir="/mnt/root" ;;
+            *) homedir="/mnt/home/$key" ;;
+        esac
+
+        mkdir -p $homedir/.ssh
+        check_if_fail $?
+
+        array ".ssh.authorized_keys.$key" \
+            >$homedir/.ssh/authorized_keys
+        check_if_fail $?
+
+        chmod -R go-rwx $homedir/.ssh
+        check_if_fail $?
+
+        run_in_chroot "chown -R $key:$key ${homedir#/mnt}/.ssh"
+        check_if_fail $?
+    done < <(hash_keys ".ssh.authorized_keys"); unset key
+
+    local hostname="$(var "hostname")"
+    while read key; do
+        local homedir
+        case "$key" in
+            "root") homedir="/mnt/root" ;;
+            *) homedir="/mnt/home/$key" ;;
+        esac
+
+        mkdir -p $homedir/.ssh
+        check_if_fail $?
+
+        ssh-keygen -f $homedir/.ssh/$hostname -N "" -q -t rsa
+        check_if_fail $?
+
+        array ".ssh.config.$key" >$homedir/.ssh/config
+        check_if_fail $?
+
+        chmod -R go-rwx $homedir/.ssh
+        check_if_fail $?
+
+        run_in_chroot "chown -R $key:$key ${homedir#/mnt}/.ssh"
+        check_if_fail $?
+    done < <(hash_keys ".ssh.config"); unset key
+}
+
+install_configure_enable_grub() {
+    run_in_chroot "pacman --needed --noconfirm -S grub"
+
+    while read key; do
+        local val="$(json_get ".grub.grub.$key")"
+        [[ -n $val ]] || continue
+        sed -i -r "s|^($key)\\=[0-9]+|\\1=$val|" /mnt/etc/default/grub
+        check_if_fail $?
+    done < <(hash_keys ".grub.grub"); unset key
+
+    case "$boot_mode" in
+        "BIOS") run_in_chroot "grub-install --target=i386-pc $1" ;;
+        "UEFI")
+            run_in_chroot "pacman --needed --noconfirm -S efibootmgr"
+            local -a cmd=(
+                "grub-install --target=x86_64-efi"
+                "--efi-directory=/boot --bootloader-id=grub"
+            )
+            run_in_chroot "${cmd[@]}"
+            ;;
+    esac
+
+    run_in_chroot "grub-mkconfig -o /boot/grub/grub.cfg"
+}
+
+install_packages() {
+    local -a gpkgs=($(array ".packages.gui"))
+    local -a npkgs=($(array ".packages.nemesis"))
+    local -a pkgs=($(array ".packages.default"))
+    [[ -z $(boolean "gui") ]] || pkgs=(${pkgs[@]/vim} ${gpkgs[@]})
+    [[ -z $(boolean "nemesis") ]] || pkgs=(${pkgs[@]/gcc} ${npkgs[@]})
+
+    case "$action" in
+        "install")
+            run_in_chroot "pacman --needed --noconfirm -S ${pkgs[@]}"
+            ;;
+        "postinstall")
+            sudo pacman --needed --noconfirm -S ${pkgs[@]}
+            ;;
+    esac
+
+    run_in_chroot "pacman --needed --noconfirm -S ruby"
+    run_in_chroot "mkdir -p /root/.gem/ruby/gems"
+    local -a env=(
+        "GEM_HOME=/root/.gem/ruby"
+        "GEM_PATH=/root/.gem/ruby/gems"
+    )
+    local gem="gem install --no-user-install"
+    local null=">/dev/null 2>&1"
+    run_in_chroot "${env[@]} $gem rdoc $null || ${env[@]} $gem rdoc"
+    run_in_chroot "${env[@]} $gem ruaur"
+
+    gpkgs=($(array ".packages.aur.gui"))
+    npkgs=($(array ".packages.aur.nemesis"))
+    pkgs=($(array ".packages.aur.default"))
+    [[ -z $(boolean "gui") ]] || pkgs+=(${gpkgs[@]})
+    [[ -z $(boolean "nemesis") ]] || pkgs+=(${npkgs[@]})
+
+    local ruaur="/root/.gem/ruby/bin/ruaur --noconfirm"
+    run_in_chroot "${env[@]} $ruaur -S ${pkgs[@]}"
+}
+
+partition_and_format_disk_bios() {
+    while read part; do
+        wipefs --all --force $part
+        check_if_fail $?
+    done < <(lsblk -lp $1 | awk '!/NAME/ {print $1}' | sort -r)
+    unset part
+
+    case "$1" in
+        "/dev/nvme"*)
+            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk $1
+                g  # clear the in memory partition table
+                n  # new partition
+                1  # partition 1
+                   # default - start at beginning of disk
+                   # default - extend partition to end of disk
+                p  # print the in-memory partition table
+                w  # write the partition table and exit
+EOF
+            check_if_fail $?
+
+            mkfs.ext4 ${1}p1
+            check_if_fail $?
+            ;;
+        *)
+            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk $1
+                o  # clear the in memory partition table
+                n  # new partition
+                p  # primary partition
+                1  # partition 1
+                   # default - start at beginning of disk
+                   # default - extend partition to end of disk
+                a  # make a partition bootable
+                p  # print the in-memory partition table
+                w  # write the partition table and exit
+EOF
+            check_if_fail $?
+
+            mkfs.ext4 ${1}1
+            check_if_fail $?
+            ;;
+    esac
+}
+
+partition_and_format_disk_uefi() {
+    while read part; do
+        wipefs --all --force $part
+        check_if_fail $?
+    done < <(lsblk -lp $1 | awk '!/NAME/ {print $1}' | sort -r)
+    unset part
+
+    case "$1" in
+        "/dev/nvme"*)
+            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk $1
+                g     # clear the in memory partition table
+                n     # new partition
+                1     # partition 1
+                      # default - start at beginning of disk
+                +256M # 256M UEFI partition
+                t     # change partition type
+                1     # EFI system
+                n     # new partition
+                2     # partition 2
+                      # default - start after UEFI partition
+                      # default - extend partition to end of disk
+                p     # print the in-memory partition table
+                w     # write the partition table and exit
+EOF
+            check_if_fail $?
+
+            mkfs.fat ${1}p1
+            check_if_fail $?
+
+            mkfs.ext4 ${1}p2
+            check_if_fail $?
+            ;;
+        *)
+            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk $1
+                o     # clear the in memory partition table
+                n     # new partition
+                p     # primary partition
+                1     # partition 1
+                      # default - start at beginning of disk
+                +256M # 256M UEFI partition
+                t     # change partition type
+                ef    # EFI system
+                n     # new partition
+                p     # primary partition
+                2     # partition 2
+                      # default - start after UEFI partition
+                      # default - extend partition to end of disk
+                a     # make a partition bootable
+                1     # partition 1
+                p     # print the in-memory partition table
+                w     # write the partition table and exit
+EOF
+            check_if_fail $?
+
+            mkfs.ext4 ${1}1
+            check_if_fail $?
+
+            mkfs.ext4 ${1}2
+            check_if_fail $?
+            ;;
+    esac
+}
+
+run_in_chroot() {
+    cat >/mnt/chroot_cmd <<EOF
+#!/usr/bin/env bash
+$@
+exit \$?
+EOF
+    check_if_fail $?
+
+    chmod 700 /mnt/chroot_cmd
+    check_if_fail $?
+
+    arch-chroot /mnt /chroot_cmd
+    check_if_fail $?
+
+    rm -f /mnt/chroot_cmd
+    check_if_fail $?
+}
+
+select_locale() {
+    local locale="$(var "locale")"
+
+    sed -i -r "s/^#$locale/$locale/" /mnt/etc/locale.gen
+    check_if_fail $?
+
+    run_in_chroot "locale-gen"
+
+    echo "LANG=$locale.UTF-8" >/mnt/etc/locale.conf
+    check_if_fail $?
+}
+
+select_mirrors() {
+    \grep -A 1 "$(var "mirrors")" /etc/pacman.d/mirrorlist | \
+        \grep -v "\-\-" >/etc/pacman.d/mirrorlist.keep
+    check_if_fail $?
+
+    mv -f /etc/pacman.d/mirrorlist.keep /etc/pacman.d/mirrorlist
+    check_if_fail $?
+}
+
+usage() {
+    echo "Usage: ${0/*\//} [OPTIONS] [dev]"
+    echo
+    echo "If no config is specified, it will print out the default"
+    echo "config. If a config is specified, it will install"
+    echo "ArchNemesis with the options specified in the config."
+    echo "Setting \"nemesis\" to \"false\" or empty means you only"
+    echo "want to install Arch Linux (and OpenBox if \"gui\" is"
+    echo "true)."
+    echo
+    echo "Options:"
+    echo "    -c, --config=CONFIG    Use specified json config"
+    echo "                           (default: $config)"
+    echo "    -h, --help             Display this help message"
+    echo "    --post-install         Only install missing packages"
+    echo
+    exit $1
+}
+
+declare -a args
+unset dev postinstall
+action="print"
+config="/tmp/archnemesis.json"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift && args+=("$@") && break ;;
+        "-c"|"--config"*)
+            case "$1" in
+                "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || usage 1 ;;
+                *) shift; [[ $# -gt 0 ]] || usage 1; arg="$1" ;;
+            esac
+            config="$arg"
+            [[ $action == "postinstall" ]] || action="install"
+            ;;
+        "-h"|"--help") usage 0 ;;
+        "--post-install") action="postinstall" ;;
+        *) args+=("$1") ;;
+    esac
+    shift
+done
+[[ -z ${args[@]} ]] || set -- "${args[@]}"
+
+cat >/tmp/archnemesis.json <<EOF
+{
+  "vars": {
+    "gui": "true",
+    "hostname": "nemesis",
+    "loadkeys": "us",
+    "locale": "en_US",
+    "mirrors": "United States",
+    "nemesis": "true",
+    "ssh_port": "52288",
+    "timezone": "America/Indiana/Indianapolis"
+  },
+  "grub": {
+    "grub": {"GRUB_TIMEOUT": "1"}
+  },
+  "iptables": {
+    "enable": "true",
+    "iptables_rules": [
+      "*nat",
+      ":PREROUTING ACCEPT [0:0]",
+      ":INPUT ACCEPT [0:0]",
+      ":OUTPUT ACCEPT [0:0]",
+      ":POSTROUTING ACCEPT [0:0]",
+      "COMMIT",
+      "*filter",
+      ":INPUT DROP [0:0]",
+      ":FORWARD DROP [0:0]",
+      ":OUTPUT ACCEPT [0:0]",
+      ":TCP - [0:0]",
+      ":UDP - [0:0]",
+      "-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+      "-A INPUT -i lo -j ACCEPT",
+      "-A INPUT -m conntrack --ctstate INVALID -j DROP",
+      "-A INPUT -p icmp -m icmp --icmp-type 8 -m conntrack --ctstate NEW -j ACCEPT",
+      "-A INPUT -p udp -m conntrack --ctstate NEW -j UDP",
+      "-A INPUT -p tcp -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -m conntrack --ctstate NEW -j TCP",
+      "-A INPUT -p udp -j REJECT --reject-with icmp-port-unreachable",
+      "-A INPUT -p tcp -j REJECT --reject-with tcp-reset",
+      "-A INPUT -j REJECT --reject-with icmp-proto-unreachable",
+      "-A TCP -p tcp -m tcp --dport {{{ssh_port}}} -j ACCEPT",
+      "COMMIT"
+    ],
+    "ip6tables_rules": [
+      "*filter",
+      ":INPUT DROP [0:0]",
+      ":FORWARD DROP [0:0]",
+      ":OUTPUT ACCEPT [0:0]",
+      ":TCP - [0:0]",
+      ":UDP - [0:0]",
+      "-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+      "-A INPUT -i lo -j ACCEPT",
+      "-A INPUT -m conntrack --ctstate INVALID -j DROP",
+      "-A INPUT -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m conntrack --ctstate NEW -j ACCEPT",
+      "-A INPUT -s fe80::/10 -p ipv6-icmp -j ACCEPT",
+      "-A INPUT -p udp -m conntrack --ctstate NEW -j UDP",
+      "-A INPUT -p tcp -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -m conntrack --ctstate NEW -j TCP",
+      "-A INPUT -j REJECT --reject-with icmp6-port-unreachable",
+      "COMMIT",
+      "*raw",
+      ":PREROUTING ACCEPT [0:0]",
+      ":OUTPUT ACCEPT [0:0]",
+      "-A PREROUTING -m rpfilter -j ACCEPT",
+      "-A PREROUTING -j DROP",
+      "COMMIT"
+    ]
+  },
+  "lxdm": {
+    "enable": "{{{gui}}}",
+    "lxdm_conf": {
+      "autologin": "nemesis",
+      "numlock": "1",
+      "session": "/usr/bin/openbox-session",
+      "theme": "IndustrialArch"
+    }
+  },
+  "network": {
+    "dhcp_network": [
+      "[Match]",
+      "Name=enp*",
+      "",
+      "[Network]",
+      "DHCP=ipv4"
+    ]
+  },
+  "packages": {
+    "aur": {
+      "default": ["urlview"],
+      "gui": [
+        "lxdm-themes",
+        "obmenu-generator",
+        "pa-applet-git"
+      ],
+      "ignore": [
+        "burpsuite",
+        "nessus"
+      ],
+      "nemesis": [
+        "amap-bin",
+        "dirb",
+        "dirbuster",
+        "httprint",
+        "isic",
+        "maltego-community",
+        "rockyou",
+        "vncrack",
+        "xprobe2"
+      ]
+    },
+    "default": [
+      "aspell",
+      "bind-tools",
+      "bzip2",
+      "cifs-utils",
+      "cpio",
+      "cronie",
+      "ctags",
+      "curl",
+      "exfat-utils",
+      "gcc",
+      "gdb",
+      "git",
+      "gzip",
+      "htop",
+      "iproute2",
+      "jdk8-openjdk",
+      "jq",
+      "lua",
+      "mlocate",
+      "mutt",
+      "ncdu",
+      "ncurses",
+      "nfs-utils",
+      "numlockx",
+      "openconnect",
+      "p7zip",
+      "par2cmdline",
+      "pygmentize",
+      "python",
+      "python-pip",
+      "python2",
+      "python2-pip",
+      "ranger",
+      "ripgrep",
+      "rsync",
+      "ruby",
+      "tcl",
+      "the_silver_searcher",
+      "tmux",
+      "unrar",
+      "vim",
+      "weechat",
+      "wpa_supplicant",
+      "xz",
+      "zip",
+      "zsh",
+      "zsh-completions",
+      "zsh-syntax-highlighting"
+    ],
+    "gui": [
+      "alsa-firmware",
+      "alsa-tools",
+      "alsa-utils",
+      "blueman",
+      "chromium",
+      "clusterssh",
+      "compton",
+      "dunst",
+      "gvim",
+      "mupdf",
+      "nitrogen",
+      "noto-fonts",
+      "oblogout",
+      "openbox",
+      "pamixer",
+      "pavucontrol",
+      "pcmanfm",
+      "pulseaudio",
+      "pulseaudio-bluetooth",
+      "rofi",
+      "terminator",
+      "termite",
+      "tilda",
+      "tint2",
+      "ttf-croscore",
+      "ttf-dejavu",
+      "ttf-droid",
+      "ttf-freefont",
+      "ttf-liberation",
+      "ttf-linux-libertine",
+      "ttf-ubuntu-font-family",
+      "viewnior",
+      "wmctrl",
+      "x11vnc",
+      "xclip",
+      "xdg-user-dirs",
+      "xdotool",
+      "xf86-input-keyboard",
+      "xf86-input-mouse",
+      "xf86-input-synaptics",
+      "xf86-video-ati",
+      "xf86-video-intel",
+      "xf86-video-vesa",
+      "xorg-server",
+      "xorg-xkill",
+      "xorg-xmodmap",
+      "xorg-xrandr",
+      "xorg-xrdb",
+      "xsel",
+      "xterm"
+    ],
+    "nemesis": [
+      "aircrack-ng",
+      "binwalk",
+      "cowpatty",
+      "dnsmasq",
+      "expect",
+      "fcrackzip",
+      "firejail",
+      "foremost",
+      "gcc-multilib",
+      "gnu-netcat",
+      "hashcat",
+      "hashcat-utils",
+      "hping",
+      "hydra",
+      "john",
+      "masscan",
+      "metasploit",
+      "ncrack",
+      "net-snmp",
+      "nikto",
+      "nmap",
+      "openvas-cli",
+      "openvas-libraries",
+      "openvas-manager",
+      "openvas-scanner",
+      "ophcrack",
+      "pyrit",
+      "radare2",
+      "socat",
+      "sqlmap",
+      "tcpdump",
+      "zaproxy",
+      "zmap"
+    ]
+  },
+  "ssh": {
+    "authorized_keys": {
+      "nemesis": [],
+      "root": []
+    },
+    "config": {
+      "nemesis": [
+        "# No agent or X11 forwarding",
+        "Host *",
+        "    IdentityFile ~/.ssh/{{{hostname}}}",
+        "    ForwardAgent no",
+        "    ForwardX11 no",
+        "    LogLevel Error"
+      ],
+      "root": []
+    },
+    "enable": "true",
+    "sshd_config": {
+      "PasswordAuthentication": "yes",
+      "PermitRootLogin": "without-password",
+      "Port": "{{{ssh_port}}}",
+      "PrintLastLog": "no",
+      "PrintMotd": "no",
+      "UseDNS": "no",
+      "X11Forwarding": "no"
+    }
+  },
+  "users": {
+    "create": [
+      "nemesis:u4JBUrB9lhPsU"
+    ]
+  }
+}
+EOF
+
+case "$action" in
+    "install")
+        [[ $# -le 1 ]] || usage 2
+        [[ $# -eq 0 ]] || dev="$1"
+        if [[ -z $dev ]]; then
+            declare -a devs=($(lsblk -lp | awk '!/NAME/ {print $1}'))
+            while :; do
+                clear && lsblk -lp && echo
+                read -p "Please enter target device: " dev
+                [[ -n $dev ]] || continue
+                valid="$(echo " ${devs[@]} " | \grep -E " $dev ")"
+                [[ -z $valid ]] || break
+            done
+        fi
+        ;;
+    "postinstall"|"print") [[ $# -eq 0 ]] || usage 2 ;;
+esac
+
+case "$action" in
+    *"install")
+        info "Checking internet connection..."
+        tmp="$(ping -c 1 8.8.8.8 | \grep "0% packet loss")"
+        [[ -n $tmp ]] || err 3 "No internet"
+        info "Success"
+
+        if [[ -z $(command -v jq) ]]; then
+            deps="http://deps.archnemesis.ninja"
+            curl -kLO "$deps/jq-1.5-5-x86_64.pkg.tar.xz"
+            curl -kLO "$deps/oniguruma-6.7.1-1-x86_64.pkg.tar.xz"
+            sudo pacman --needed --noconfirm -U *.pkg.tar.xz
+            check_if_fail $?
+        fi
+
+        info "Validating json config..."
+        cat $config | jq -cMrS "." >/dev/null
+        check_if_fail $?
+        info "Success"
+        ;;
+esac
+
+case "$action" in
+    "install")
+        mounted="$(mount | \grep -Eo "$dev[0-9p]*")"
+        [[ -z $mounted ]] || umount -R /mnt
+        mounted="$(mount | \grep -Eo "$dev[0-9p]*")"
+        [[ -z $mounted ]] || err 4 "Device already mounted"
+
+        boot_mode="BIOS"
+        [[ ! -d /sys/firmware/efi/efivars ]] || boot_mode="UEFI"
+
+        info "Selecting keyboard layout"
+        loadkeys="$(var "loadkeys")"
+        loadkeys $loadkeys
+        check_if_fail $?
+
+        info "Updating system clock"
+        timedatectl set-ntp true
+        check_if_fail $?
+
+        case "$boot_mode" in
+            "BIOS")
+                info "Partitioning and formatting disk"
+                partition_and_format_disk_bios $dev
+
+                info "Mounting file system"
+                case "$dev" in
+                    "/dev/nvme"*) mount ${dev}p1 /mnt ;;
+                    *) mount ${dev}1 /mnt ;;
+                esac
+                check_if_fail $?
+                ;;
+            "UEFI")
+                info "Partitioning and formatting disk"
+                partition_and_format_disk_uefi $dev
+
+                info "Mounting file systems"
+                case "$dev" in
+                    "/dev/nvme"*)
+                        mount ${dev}p2 /mnt
+                        mkdir -p /mnt/boot
+                        mount ${dev}p1 /mnt/boot
+                        ;;
+                    *)
+                        mount ${dev}2 /mnt
+                        mkdir -p /mnt/boot
+                        mount ${dev}1 /mnt/boot
+                        ;;
+                esac
+                check_if_fail $?
+                ;;
+        esac
+
+        info "Selecting mirrors"
+        select_mirrors
+
+        info "Installing base packages"
+        pacstrap /mnt base base-devel
+        check_if_fail $?
+
+        info "Configuring the system"
+
+        info "Generating fstab"
+        genfstab -U /mnt >>/mnt/etc/fstab
+        check_if_fail $?
+
+        info "chroot tasks"
+
+        info "Selecting the time zone"
+        tz="$(var "timezone")"
+        run_in_chroot "ln -sf /usr/share/zoneinfo/$tz /etc/localtime"
+        run_in_chroot "hwclock --systohc"
+
+        info "Selecting locale"
+        select_locale
+
+        info "Saving the keyboard layout"
+        echo "KEYMAP=$loadkeys" >/mnt/etc/vconsole.conf
+        check_if_fail $?
+
+        info "Saving hostname"
+        echo "$(var "hostname")" >/mnt/etc/hostname
+        check_if_fail $?
+
+        if [[ -n $(var "nemesis") ]]; then
+            info "Enabling multilib in pacman.conf"
+            enable_multilib /mnt/etc/pacman.conf
+        fi
+
+        info "Installing and configuring GRUB"
+        install_configure_enable_grub $dev
+
+        info "Configuring and enabling networking"
+        configure_enable_networking
+
+        info "Creating users"
+        create_users
+
+        info "Installing/Configuring/Enabling iptables"
+        install_configure_enable_iptables
+
+        info "Installing/Configuring/Enabling SSH"
+        install_configure_enable_ssh
+
+        if [[ -n $(var "gui") ]]; then
+            info "Installing/Configuring/Enabling NetworkManager"
+            install_configure_enable_networkmanager
+
+            info "Installing/Configuring/Enabling LXDM"
+            install_configure_enable_lxdm
+        fi
+
+        info "Installing user requested packages"
+        install_packages
+
+        info "User customizations"
+        customize
+
+        info "Unmounting"
+        umount -R /mnt
+        check_if_fail $?
+
+        info "You can now reboot (remove installation media)"
+        ;;
+    "postinstall")
+        if [[ -n $(var "nemesis") ]]; then
+            info "Enabling multilib in pacman.conf"
+            enable_multilib /etc/pacman.conf
+        fi
+
+        info "Installing missing packages"
+        install_packages
+        ;;
+    "print") cat /tmp/archnemesis.json ;;
+esac
