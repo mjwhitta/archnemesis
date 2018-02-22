@@ -542,7 +542,10 @@ cat >/tmp/archnemesis.json <<EOF
   },
   "packages": {
     "aur": {
-      "default": ["urlview"],
+      "default": [
+        "urlview",
+        "zsh-history-substring-search"
+      ],
       "gui": [
         "lxdm-themes",
         "obmenu-generator",
