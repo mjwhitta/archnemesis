@@ -6,6 +6,8 @@ array() { json_get "$1[]"; }
 
 boolean() {
     local var="$1"
+
+    # If it doesn't start with a "." then it should be a "var"
     [[ -n $(echo "$1" | \grep -E "^\.") ]] || var=".vars.$1"
 
     # I can only anticipate so much here
@@ -17,10 +19,13 @@ boolean() {
     esac
 }
 
+# Exit if bad return status
 check_if_fail() { [[ $1 -eq 0 ]] || err $1 "Something went wrong"; }
 
+# Error message
 err() { ret="$1" && shift; echo -e "\e[31m[-] $@\e[0m"; exit $ret; }
 
+# Get value from json and replace placeholders with variable values
 json_get() {
     while read line; do
         [[ $line != "null" ]] || continue
@@ -37,32 +42,59 @@ json_get() {
     done < <(cat $config | jq -cMrS "$1" 2>/dev/null); unset line
 }
 
+# Get a list of keys for a hash
 hash_keys() { json_get "$1|keys[]"; }
 
+# Info message
 info() { echo -e "\e[32m[+] $@\e[0m"; sleep 1; }
 
+# Run the command in the chroot
+run_in_chroot() {
+    cat >/mnt/chroot_cmd <<EOF
+#!/usr/bin/env bash
+$@
+exit \$?
+EOF
+    check_if_fail $?
+
+    chmod 700 /mnt/chroot_cmd
+    check_if_fail $?
+
+    arch-chroot /mnt /chroot_cmd
+    check_if_fail $?
+
+    rm -f /mnt/chroot_cmd
+    check_if_fail $?
+}
+
+# Get one of the variables
 var() { json_get ".vars.$1"; }
 
 ## Configuration functions
 
 configure_enable_networking() {
+    # Configure dhcp
     array ".network.dhcp_network" \
         >/mnt/etc/systemd/network/dhcp.network
     check_if_fail $?
 
+    # Symlink /etc/resolv.conf
     ln -sf ../run/systemd/resolve/resolv.conf /mnt/etc/
     check_if_fail $?
 
+    # Enable services
     run_in_chroot "systemctl enable systemd-networkd.service"
     run_in_chroot "systemctl enable systemd-resolved.service"
 }
 
 create_users() {
+    # Loop thru users and create them
     while read creds; do
         local password="${creds#*:}"
         local username="${creds%%:*}"
         run_in_chroot "useradd -m -p \"$password\" -U $username"
 
+        # Autostart tint2 for openbox sessions
         # if [[ -n $(boolean "gui") ]]; then
         #     # TODO autostart tint2 and set wallpaper
         # fi
@@ -88,41 +120,48 @@ customize() {
 }
 
 enable_multilib() {
-    if [[ -n $(\grep "#\[multilib\]" $1) ]]; then
-        local inc="/etc/pacman.d/mirrorlist"
-        sed -i -r \
-            -e "s/^#(\[multilib\]).*/\\1/" \
-            -e "/^\[multilib\]/!b;n;cInclude = $inc" $1
-        check_if_fail $?
+    # Return if already uncommented
+    [[ -n $(\grep "#\[multilib\]" $1) ]] || return
 
-        case "$action" in
-            "install") run_in_chroot "pacman -Syy" ;;
-            "postinstall") sudo pacman -Syy ;;
-        esac
-    fi
+    # Uncomment out the multilib line
+    local inc="/etc/pacman.d/mirrorlist"
+    sed -i -r \
+        -e "s/^#(\[multilib\]).*/\\1/" \
+        -e "/^\[multilib\]/!b;n;cInclude = $inc" $1
+    check_if_fail $?
+
+    # Update pacman database
+    case "$action" in
+        "install") run_in_chroot "pacman -Syy" ;;
+        "postinstall") sudo pacman -Syy ;;
+    esac
 }
 
 install_configure_enable_iptables() {
+    # Install iptables
     run_in_chroot "pacman --needed --noconfirm -S iptables"
 
-    array ".iptables.iptables_rules" >/mnt/etc/iptables/iptables.rules
-    check_if_fail $?
+    # Create rules files
+    for fw in iptables ip6tables; do
+        array ".iptables.${fw}_rules" >/mnt/etc/iptables/${fw}.rules
+        check_if_fail $?
+    done; unset fw
 
-    array ".iptables.ip6tables_rules" \
-        >/mnt/etc/iptables/ip6tables.rules
-    check_if_fail $?
-
+    # Fix permissions
     chmod 644 /mnt/etc/iptables/{iptables,ip6tables}.rules
     check_if_fail $?
 
+    # Enable services
     if [[ -n $(boolean ".iptables.enable") ]]; then
         run_in_chroot "systemctl enable {iptables,ip6tables}.service"
     fi
 }
 
 install_configure_enable_lxdm() {
+    # Install LXDM
     run_in_chroot "pacman --needed --noconfirm -S lxdm"
 
+    # Update lxdm.conf
     while read key; do
         local val="$(json_get ".lxdm.lxdm_conf.$key")"
         [[ -n $val ]] || continue
@@ -130,12 +169,14 @@ install_configure_enable_lxdm() {
         check_if_fail $?
     done < <(hash_keys ".lxdm.lxdm_conf"); unset key
 
+    # Enable service
     if [[ -n $(boolean ".lxdm.enable") ]]; then
         run_in_chroot "systemctl enable lxdm.service"
     fi
 }
 
 install_configure_enable_networkmanager() {
+    # Install NetworkManager
     local -a pkgs=(
         "network-manager-applet"
         "networkmanager"
@@ -143,12 +184,16 @@ install_configure_enable_networkmanager() {
         "networkmanager-openvpn"
     )
     run_in_chroot "pacman --needed --noconfirm -S ${pkgs[@]}"
+
+    # Enable service
     run_in_chroot "systemctl enable NetworkManager.service"
 }
 
 install_configure_enable_ssh() {
+    # Install SSH
     run_in_chroot "pacman --needed --noconfirm -S openssh"
 
+    # Update sshd_config
     while read key; do
         local val="$(json_get ".ssh.sshd_config.$key")"
         [[ -n $val ]] || continue
@@ -156,10 +201,12 @@ install_configure_enable_ssh() {
         check_if_fail $?
     done < <(hash_keys ".ssh.sshd_config"); unset key
 
+    # Enable service
     if [[ -n $(boolean ".ssh.enable") ]]; then
         run_in_chroot "systemctl enable sshd.service"
     fi
 
+    # Configure initial ~/.ssh/authorized_keys
     while read key; do
         local homedir
         case "$key" in
@@ -181,6 +228,7 @@ install_configure_enable_ssh() {
         check_if_fail $?
     done < <(hash_keys ".ssh.authorized_keys"); unset key
 
+    # Configure initial ~/.ssh/config
     local hostname="$(var "hostname")"
     while read key; do
         local homedir
@@ -207,8 +255,10 @@ install_configure_enable_ssh() {
 }
 
 install_configure_enable_grub() {
+    # Install grub
     run_in_chroot "pacman --needed --noconfirm -S grub"
 
+    # Update /etc/default/grub
     while read key; do
         local val="$(json_get ".grub.grub.$key")"
         [[ -n $val ]] || continue
@@ -216,6 +266,7 @@ install_configure_enable_grub() {
         check_if_fail $?
     done < <(hash_keys ".grub.grub"); unset key
 
+    # Install bootloader
     case "$boot_mode" in
         "BIOS") run_in_chroot "grub-install --target=i386-pc $1" ;;
         "UEFI")
@@ -228,16 +279,17 @@ install_configure_enable_grub() {
             ;;
     esac
 
+    # Configure grub
     run_in_chroot "grub-mkconfig -o /boot/grub/grub.cfg"
 }
 
 install_packages() {
+    # Install packages with pacman
     local -a gpkgs=($(array ".packages.gui"))
     local -a npkgs=($(array ".packages.nemesis"))
     local -a pkgs=($(array ".packages.default"))
     [[ -z $(boolean "gui") ]] || pkgs=(${pkgs[@]/vim} ${gpkgs[@]})
     [[ -z $(boolean "nemesis") ]] || pkgs=(${pkgs[@]/gcc} ${npkgs[@]})
-
     case "$action" in
         "install")
             run_in_chroot "pacman --needed --noconfirm -S ${pkgs[@]}"
@@ -247,34 +299,61 @@ install_packages() {
             ;;
     esac
 
-    run_in_chroot "pacman --needed --noconfirm -S ruby"
-    run_in_chroot "mkdir -p /root/.gem/ruby/gems"
+    # Install RuAUR ruby gem
     local -a env=(
         "GEM_HOME=/root/.gem/ruby"
         "GEM_PATH=/root/.gem/ruby/gems"
     )
+    local GEM_HOME=$HOME/.gem/ruby
+    local GEM_PATH=$HOME/.gem/ruby/gems
     local gem="gem install --no-user-install"
-    local null=">/dev/null 2>&1"
-    run_in_chroot "${env[@]} $gem rdoc $null || ${env[@]} $gem rdoc"
-    run_in_chroot "${env[@]} $gem ruaur"
+    case "$action" in
+        "install")
+            run_in_chroot "pacman --needed --noconfirm -S ruby"
+            run_in_chroot "mkdir -p /root/.gem/ruby/gems"
+            local null=">/dev/null 2>&1"
+            run_in_chroot "${env[@]} $gem rdoc $null || echo -n"
+            run_in_chroot "${env[@]} $gem rdoc ruaur"
+            ;;
+        "postinstall")
+            mkdir -p $HOME/.gem/ruby/gems
+            sudo pacman --needed --noconfirm -S ruby
+            check_if_fail $?
 
+            $gem rdoc >/dev/null 2>&1
+            $gem rdoc ruaur
+            check_if_fail $?
+            ;;
+    esac
+
+    # Install AUR packages with RuAUR
     gpkgs=($(array ".packages.aur.gui"))
     npkgs=($(array ".packages.aur.nemesis"))
     pkgs=($(array ".packages.aur.default"))
     [[ -z $(boolean "gui") ]] || pkgs+=(${gpkgs[@]})
     [[ -z $(boolean "nemesis") ]] || pkgs+=(${npkgs[@]})
-
-    local ruaur="/root/.gem/ruby/bin/ruaur --noconfirm"
-    run_in_chroot "${env[@]} $ruaur -S ${pkgs[@]}"
+    case "$action" in
+        "install")
+            local ruaur="/root/.gem/ruby/bin/ruaur --noconfirm"
+            run_in_chroot "${env[@]} $ruaur -S ${pkgs[@]}"
+            ;;
+        "postinstall")
+            local ruaur="$HOME/.gem/ruby/bin/ruaur --noconfirm"
+            $ruaur -S ${pkgs[@]}
+            check_if_fail $?
+            ;;
+    esac
 }
 
 partition_and_format_disk_bios() {
+    # Wipe all signatures
     while read part; do
         wipefs --all --force $part
         check_if_fail $?
     done < <(lsblk -lp $1 | awk '!/NAME/ {print $1}' | sort -r)
     unset part
 
+    # Single bootable partition (ext4)
     case "$1" in
         "/dev/nvme"*)
             sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk $1
@@ -312,12 +391,14 @@ EOF
 }
 
 partition_and_format_disk_uefi() {
+    # Wipe all signatures
     while read part; do
         wipefs --all --force $part
         check_if_fail $?
     done < <(lsblk -lp $1 | awk '!/NAME/ {print $1}' | sort -r)
     unset part
 
+    # A small, bootable partition (EFI) and a larger partition (ext4)
     case "$1" in
         "/dev/nvme"*)
             sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk $1
@@ -374,41 +455,26 @@ EOF
     esac
 }
 
-run_in_chroot() {
-    cat >/mnt/chroot_cmd <<EOF
-#!/usr/bin/env bash
-$@
-exit \$?
-EOF
-    check_if_fail $?
-
-    chmod 700 /mnt/chroot_cmd
-    check_if_fail $?
-
-    arch-chroot /mnt /chroot_cmd
-    check_if_fail $?
-
-    rm -f /mnt/chroot_cmd
-    check_if_fail $?
-}
-
 select_locale() {
     local locale="$(var "locale")"
 
+    # Uncomment preferred locale
     sed -i -r "s/^#$locale/$locale/" /mnt/etc/locale.gen
     check_if_fail $?
 
+    # Configure locale
     run_in_chroot "locale-gen"
-
     echo "LANG=$locale.UTF-8" >/mnt/etc/locale.conf
     check_if_fail $?
 }
 
 select_mirrors() {
+    # Get preferred mirrors
     \grep -A 1 "$(var "mirrors")" /etc/pacman.d/mirrorlist | \
         \grep -v "\-\-" >/etc/pacman.d/mirrorlist.keep
     check_if_fail $?
 
+    # Replace mirrors with preferred mirrors
     mv -f /etc/pacman.d/mirrorlist.keep /etc/pacman.d/mirrorlist
     check_if_fail $?
 }
@@ -431,6 +497,8 @@ usage() {
     echo
     exit $1
 }
+
+# Parse cli args
 
 declare -a args
 unset dev postinstall
@@ -456,6 +524,25 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -z ${args[@]} ]] || set -- "${args[@]}"
 
+case "$action" in
+    "install")
+        [[ $# -le 1 ]] || usage 2
+        [[ $# -eq 0 ]] || dev="$1"
+        if [[ -z $dev ]]; then
+            declare -a devs=($(lsblk -lp | awk '!/NAME/ {print $1}'))
+            while :; do
+                clear && lsblk -lp && echo
+                read -p "Please enter target device: " dev
+                [[ -n $dev ]] || continue
+                valid="$(echo " ${devs[@]} " | \grep -E " $dev ")"
+                [[ -z $valid ]] || break
+            done
+        fi
+        ;;
+    "postinstall"|"print") [[ $# -eq 0 ]] || usage 2 ;;
+esac
+
+# Default json
 cat >/tmp/archnemesis.json <<EOF
 {
   "vars": {
@@ -741,23 +828,7 @@ cat >/tmp/archnemesis.json <<EOF
 }
 EOF
 
-case "$action" in
-    "install")
-        [[ $# -le 1 ]] || usage 2
-        [[ $# -eq 0 ]] || dev="$1"
-        if [[ -z $dev ]]; then
-            declare -a devs=($(lsblk -lp | awk '!/NAME/ {print $1}'))
-            while :; do
-                clear && lsblk -lp && echo
-                read -p "Please enter target device: " dev
-                [[ -n $dev ]] || continue
-                valid="$(echo " ${devs[@]} " | \grep -E " $dev ")"
-                [[ -z $valid ]] || break
-            done
-        fi
-        ;;
-    "postinstall"|"print") [[ $# -eq 0 ]] || usage 2 ;;
-esac
+# Main
 
 case "$action" in
     *"install")

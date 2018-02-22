@@ -120,8 +120,6 @@ skip most of the configuration and just install any missing packages.
 ## TODO
 
 - Lots of things
-    - Comments
     - Store progress
         - Continue from where you left off, if error encountered
-    - AUR packages
     - dm-crypt +/- LUKS
