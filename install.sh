@@ -587,6 +587,7 @@ cat >/tmp/archnemesis.json <<EOF
       "jq",
       "lua",
       "mlocate",
+      "moreutils",
       "mutt",
       "ncdu",
       "ncurses",
