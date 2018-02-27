@@ -640,17 +640,18 @@ cat >/tmp/archnemesis.json <<EOF
       ],
       "ignore": [
         "burpsuite",
-        "nessus"
+        "nessus",
+        "samdump2"
       ],
       "nemesis": [
         "amap-bin",
         "dirb",
         "dirbuster",
         "httprint",
+        "impacket-git",
         "isic",
         "maltego-community",
         "rockyou",
-        "samdump2",
         "vncrack",
         "xprobe2"
       ]
