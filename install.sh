@@ -650,6 +650,7 @@ cat >/tmp/archnemesis.json <<EOF
         "isic",
         "maltego-community",
         "rockyou",
+        "samdump2",
         "vncrack",
         "xprobe2"
       ]
