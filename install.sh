@@ -292,10 +292,15 @@ install_packages() {
     [[ -z $(boolean "nemesis") ]] || pkgs=(${pkgs[@]/gcc} ${npkgs[@]})
     case "$action" in
         "install")
-            run_in_chroot "pacman --needed --noconfirm -S ${pkgs[@]}"
+            if [[ -n ${pkgs[@]} ]]; then
+                run_in_chroot \
+                    "pacman --needed --noconfirm -S ${pkgs[@]}"
+            fi
             ;;
         "postinstall")
-            sudo pacman --needed --noconfirm -S ${pkgs[@]}
+            if [[ -n ${pkgs[@]} ]]; then
+                sudo pacman --needed --noconfirm -S ${pkgs[@]}
+            fi
             ;;
     esac
 
@@ -335,11 +340,15 @@ install_packages() {
     case "$action" in
         "install")
             local ruaur="/root/.gem/ruby/bin/ruaur --noconfirm"
-            run_in_chroot "${env[@]} $ruaur -S ${pkgs[@]}"
+            if [[ -n ${pkgs[@]} ]]; then
+                run_in_chroot "${env[@]} $ruaur -S ${pkgs[@]}"
+            fi
             ;;
         "postinstall")
             local ruaur="$HOME/.gem/ruby/bin/ruaur --noconfirm"
-            $ruaur -S ${pkgs[@]}
+            if [[ -n ${pkgs[@]} ]]; then
+                $ruaur -S ${pkgs[@]}
+            fi
             check_if_fail $?
             ;;
     esac
@@ -762,6 +771,7 @@ cat >/tmp/archnemesis.json <<EOF
     "nemesis": [
       "aircrack-ng",
       "binwalk",
+      "clamav",
       "cowpatty",
       "dnsmasq",
       "expect",
