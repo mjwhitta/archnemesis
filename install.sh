@@ -695,6 +695,7 @@ cat >/tmp/archnemesis.json <<EOF
       "openconnect",
       "p7zip",
       "par2cmdline",
+      "parallel",
       "putty",
       "pygmentize",
       "python",
