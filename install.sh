@@ -678,6 +678,7 @@ cat >/tmp/archnemesis.json <<EOF
       "gcc",
       "gdb",
       "git",
+      "go",
       "gzip",
       "htop",
       "iproute2",
