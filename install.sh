@@ -707,6 +707,7 @@ cat >/tmp/archnemesis.json <<EOF
       "the_silver_searcher",
       "tmux",
       "unrar",
+      "unzip",
       "vim",
       "weechat",
       "wpa_supplicant",
