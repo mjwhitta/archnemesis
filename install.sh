@@ -810,6 +810,7 @@ cat >/tmp/archnemesis.json <<EOF
       "socat",
       "sqlmap",
       "tcpdump",
+      "wireshark-gtk",
       "zaproxy",
       "zmap"
     ]
