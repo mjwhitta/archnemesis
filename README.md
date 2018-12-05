@@ -13,7 +13,7 @@ configurations.
 From an Arch Installation ISO:
 
 ```
-$ curl -kLs "http://nemesis.archnemesis.ninja" | bash
+$ curl -kLs "https://nemesis.archnemesis.ninja" | bash
 ```
 
 **Note:** Default credentials: `nemesis:nemesis`
@@ -23,7 +23,7 @@ $ curl -kLs "http://nemesis.archnemesis.ninja" | bash
 From an Arch Installation ISO:
 
 ```
-$ curl -kLs "http://cli.archnemesis.ninja" | bash
+$ curl -kLs "https://cli.archnemesis.ninja" | bash
 ```
 
 **Note:** Default credentials: `nemesis:nemesis`
@@ -31,7 +31,7 @@ $ curl -kLs "http://cli.archnemesis.ninja" | bash
 ### Post-install
 
 ```
-$ curl -kLs "http://post-install.archnemesis.ninja" | bash
+$ curl -kLs "https://post-install.archnemesis.ninja" | bash
 ```
 
 ## Installation (from scratch)
@@ -55,9 +55,11 @@ $ curl -kLs "http://post-install.archnemesis.ninja" | bash
 
 4. Modify the json file as needed
 
-    - Change ssh port
-    - Add users
     - Add authorized_keys
+    - Add users
+    - Change session
+    - Change ssh port
+    - Modify packages
 
 ### Installing
 
@@ -67,8 +69,8 @@ $ curl -kLs "http://post-install.archnemesis.ninja" | bash
 
 2. Boot it up and wait for the shell prompt
 
-3. Find a way to get the config onto the machine (or prep on this
-   machine)
+3. Find a way to get `authorized_keys` and/or the config onto the
+   install machine (or prep on this machine)
 
     a) On a remote machine:
 
@@ -77,7 +79,6 @@ $ curl -kLs "http://post-install.archnemesis.ninja" | bash
     ```
 
     b) On the install machine:
-
 
     ```
     $ curl -s "http://remote_machine:8080/authorized_keys"

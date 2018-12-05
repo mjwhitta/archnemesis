@@ -1,5 +1,28 @@
 #!/usr/bin/env bash
 
+### Helpers begin
+check_deps() {
+    for d in "${deps[@]}"; do
+        [[ -n $(command -v "$d") ]] || errx 128 "$d is not installed"
+    done; unset d
+}
+err() { echo -e "${color:+\e[31m}[!] $*\e[0m"; }
+errx() { echo -e "${color:+\e[31m}[!] ${*:2}\e[0m"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*\e[0m"; }
+info() { echo -e "${color:+\e[37m}[*] $*\e[0m"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || usage 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || usage 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return $shift
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*\e[0m"; }
+warn() { echo -e "${color:+\e[33m}[-] $*\e[0m"; }
+### Helpers end
+
 ## Installer functions
 
 array() { json_get "$1[]"; }
@@ -8,7 +31,7 @@ boolean() {
     local var="$1"
 
     # If it doesn't start with a "." then it should be a "var"
-    [[ -n $(echo "$1" | \grep -E "^\.") ]] || var=".vars.$1"
+    [[ -n $(echo "$1" | grep -Ps "^\.") ]] || var=".vars.$1"
 
     # I can only anticipate so much here
     case "$(json_get "$var")" in
@@ -20,33 +43,29 @@ boolean() {
 }
 
 # Exit if bad return status
-check_if_fail() { [[ $1 -eq 0 ]] || err $1 "Something went wrong"; }
-
-# Error message
-err() { ret="$1" && shift; echo -e "\e[31m[-] $@\e[0m"; exit $ret; }
+check_if_fail() {
+    [[ $1 -eq 0 ]] || errx "$1" "Something went wrong"
+}
 
 # Get value from json and replace placeholders with variable values
 json_get() {
-    while read line; do
+    while read -r line; do
         [[ $line != "null" ]] || continue
 
-        while read replace; do
+        while read -r replace; do
             local new="${replace#\{\{\{}"
             new="${new%\}\}\}}"
             new="$(var "$new")"
             line="${line//$replace/$new}"
-        done < <(echo "$line" | \grep -Eo "\{\{\{[^}]+\}\}\}")
+        done < <(echo "$line" | grep -oPs "\{\{\{[^}]+\}\}\}")
         unset replace
 
         echo "$line"
-    done < <(cat $config | jq -cMrS "$1" 2>/dev/null); unset line
+    done < <(jq -cMrS "$1" 2>/dev/null "$config"); unset line
 }
 
 # Get a list of keys for a hash
 hash_keys() { json_get "$1|keys[]"; }
-
-# Info message
-info() { echo -e "\e[32m[+] $@\e[0m"; sleep 1; }
 
 # Run the command in the chroot
 run_in_chroot() {
@@ -89,15 +108,26 @@ configure_enable_networking() {
 
 create_users() {
     # Loop thru users and create them
-    while read creds; do
+    while read -r creds; do
         local password="${creds#*:}"
         local username="${creds%%:*}"
-        run_in_chroot "useradd -m -p \"$password\" -U $username"
+        local crypt="$(
+            perl -e "print crypt(\"$password\", \"$RANDOM\")"
+        )"
+        run_in_chroot "useradd -m -p \"$crypt\" -U $username"
 
         # Autostart tint2 for openbox sessions
-        # if [[ -n $(boolean "gui") ]]; then
-        #     # TODO autostart tint2 and set wallpaper
-        # fi
+        if [[ -n $(boolean "gui") ]]; then
+            case "$(var "session")" in
+                "openbox")
+                    local configs="/mnt/home/$username/.config"
+                    mkdir -p "$configs/openbox"
+                    echo "tint2 &" >"$configs/openbox/autostart"
+                    run_in_chroot "chown -R $username ${configs#/mnt}"
+                    run_in_chroot "chgrp -R $username ${configs#/mnt}"
+                    ;;
+            esac
+        fi
     done < <(array ".users.create"); unset creds
 }
 
@@ -111,7 +141,7 @@ customize() {
 
     local ans
     while :; do
-        read -p "Drop into a shell? (y/N) " ans
+        read -p "Drop into a shell? (y/N) " -r ans
         case "$ans" in
             "y"|"Y"|"yes"|"Yes") arch-chroot /mnt; break ;;
             ""|"n"|"N"|"no"|"No") break ;;
@@ -121,13 +151,13 @@ customize() {
 
 enable_multilib() {
     # Return if already uncommented
-    [[ -n $(\grep "#\[multilib\]" $1) ]] || return
+    [[ -n $(grep -Ps "#\[multilib\]" "$1") ]] || return
 
     # Uncomment out the multilib line
     local inc="/etc/pacman.d/mirrorlist"
     sed -i -r \
         -e "s/^#(\[multilib\]).*/\\1/" \
-        -e "/^\[multilib\]/!b;n;cInclude = $inc" $1
+        -e "/^\[multilib\]/!b;n;cInclude = $inc" "$1"
     check_if_fail $?
 
     # Update pacman database
@@ -162,7 +192,7 @@ install_configure_enable_lxdm() {
     run_in_chroot "pacman --needed --noconfirm -S lxdm"
 
     # Update lxdm.conf
-    while read key; do
+    while read -r key; do
         local val="$(json_get ".lxdm.lxdm_conf.$key")"
         [[ -n $val ]] || continue
         sed -i -r "s|^#? ?($key)=.*|\\1=$val|" /mnt/etc/lxdm/lxdm.conf
@@ -183,7 +213,7 @@ install_configure_enable_networkmanager() {
         "networkmanager-openconnect"
         "networkmanager-openvpn"
     )
-    run_in_chroot "pacman --needed --noconfirm -S ${pkgs[@]}"
+    run_in_chroot "pacman --needed --noconfirm -S ${pkgs[*]}"
 
     # Enable service
     run_in_chroot "systemctl enable NetworkManager.service"
@@ -194,7 +224,7 @@ install_configure_enable_ssh() {
     run_in_chroot "pacman --needed --noconfirm -S openssh"
 
     # Update sshd_config
-    while read key; do
+    while read -r key; do
         local val="$(json_get ".ssh.sshd_config.$key")"
         [[ -n $val ]] || continue
         sed -i -r "s|^#?($key) .*|\\1 $val|" /mnt/etc/ssh/sshd_config
@@ -207,49 +237,49 @@ install_configure_enable_ssh() {
     fi
 
     # Configure initial ~/.ssh/authorized_keys
-    while read key; do
+    while read -r key; do
         local homedir
         case "$key" in
             "root") homedir="/mnt/root" ;;
             *) homedir="/mnt/home/$key" ;;
         esac
 
-        mkdir -p $homedir/.ssh
+        mkdir -p "$homedir/.ssh"
         check_if_fail $?
 
         array ".ssh.authorized_keys.$key" \
-            >$homedir/.ssh/authorized_keys
+            >"$homedir/.ssh/authorized_keys"
         check_if_fail $?
 
-        chmod -R go-rwx $homedir/.ssh
+        chmod -R go-rwx "$homedir/.ssh"
         check_if_fail $?
 
-        run_in_chroot "chown -R $key:$key ${homedir#/mnt}/.ssh"
+        run_in_chroot "chown -R $key:$key \"${homedir#/mnt}/.ssh\""
         check_if_fail $?
     done < <(hash_keys ".ssh.authorized_keys"); unset key
 
     # Configure initial ~/.ssh/config
     local hostname="$(var "hostname")"
-    while read key; do
+    while read -r key; do
         local homedir
         case "$key" in
             "root") homedir="/mnt/root" ;;
             *) homedir="/mnt/home/$key" ;;
         esac
 
-        mkdir -p $homedir/.ssh
+        mkdir -p "$homedir/.ssh"
         check_if_fail $?
 
-        ssh-keygen -f $homedir/.ssh/$hostname -N "" -q -t rsa
+        ssh-keygen -f "$homedir/.ssh/$hostname" -N "" -q -t ed25519
         check_if_fail $?
 
-        array ".ssh.config.$key" >$homedir/.ssh/config
+        array ".ssh.config.$key" >"$homedir/.ssh/config"
         check_if_fail $?
 
-        chmod -R go-rwx $homedir/.ssh
+        chmod -R go-rwx "$homedir/.ssh"
         check_if_fail $?
 
-        run_in_chroot "chown -R $key:$key ${homedir#/mnt}/.ssh"
+        run_in_chroot "chown -R $key:$key \"${homedir#/mnt}/.ssh\""
         check_if_fail $?
     done < <(hash_keys ".ssh.config"); unset key
 }
@@ -259,7 +289,7 @@ install_configure_enable_grub() {
     run_in_chroot "pacman --needed --noconfirm -S grub"
 
     # Update /etc/default/grub
-    while read key; do
+    while read -r key; do
         local val="$(json_get ".grub.grub.$key")"
         [[ -n $val ]] || continue
         sed -i -r "s|^($key)\\=[0-9]+|\\1=$val|" /mnt/etc/default/grub
@@ -285,21 +315,32 @@ install_configure_enable_grub() {
 
 install_packages() {
     # Install packages with pacman
-    local -a gpkgs=($(array ".packages.gui"))
-    local -a npkgs=($(array ".packages.nemesis"))
-    local -a pkgs=($(array ".packages.default"))
-    [[ -z $(boolean "gui") ]] || pkgs=(${pkgs[@]/vim} ${gpkgs[@]})
-    [[ -z $(boolean "nemesis") ]] || pkgs=(${pkgs[@]/gcc} ${npkgs[@]})
+    local -a gpkgs npkgs pkgs
+    while read -r pkg; do
+        gpkgs+=("$pkg")
+    done < <(array ".packages.gui"); unset pkg
+    while read -r pkg; do
+        npkgs+=("$pkg")
+    done < <(array ".packages.nemesis-tools"); unset pkg
+    while read -r pkg; do
+        pkgs+=("$pkg")
+    done < <(array ".packages.default"); unset pkg
+
+    [[ -z $(boolean "gui") ]] || pkgs=("${pkgs[@]/vim}" "${gpkgs[@]}")
+    if [[ -n $(boolean "nemesis-tools") ]]; then
+        pkgs=("${pkgs[@]/gcc}" "${npkgs[@]}")
+    fi
+
     case "$action" in
         "install")
-            if [[ -n ${pkgs[@]} ]]; then
+            if [[ ${#pkgs[@]} -gt 0 ]]; then
                 run_in_chroot \
-                    "pacman --needed --noconfirm -S ${pkgs[@]}"
+                    "pacman --needed --noconfirm -S ${pkgs[*]}"
             fi
             ;;
         "postinstall")
-            if [[ -n ${pkgs[@]} ]]; then
-                sudo pacman --needed --noconfirm -S ${pkgs[@]}
+            if [[ ${#pkgs[@]} -gt 0 ]]; then
+                sudo pacman --needed --noconfirm -S "${pkgs[@]}"
             fi
             ;;
     esac
@@ -309,19 +350,20 @@ install_packages() {
         "GEM_HOME=/root/.gem/ruby"
         "GEM_PATH=/root/.gem/ruby/gems"
     )
-    local GEM_HOME=$HOME/.gem/ruby
-    local GEM_PATH=$HOME/.gem/ruby/gems
     local gem="gem install --no-user-install"
     case "$action" in
         "install")
             run_in_chroot "pacman --needed --noconfirm -S ruby"
             run_in_chroot "mkdir -p /root/.gem/ruby/gems"
             local null=">/dev/null 2>&1"
-            run_in_chroot "${env[@]} $gem rdoc $null || echo -n"
-            run_in_chroot "${env[@]} $gem rdoc ruaur"
+            run_in_chroot "${env[*]} $gem rdoc $null || echo -n"
+            run_in_chroot "${env[*]} $gem rdoc ruaur"
             ;;
         "postinstall")
-            mkdir -p $HOME/.gem/ruby/gems
+            export GEM_HOME="$HOME/.gem/ruby"
+            export GEM_PATH="$HOME/.gem/ruby/gems"
+
+            mkdir -p "$HOME/.gem/ruby/gems"
             sudo pacman --needed --noconfirm -S ruby
             check_if_fail $?
 
@@ -331,23 +373,32 @@ install_packages() {
             ;;
     esac
 
+    # Reset
+    unset gpkgs npkgs pkgs
+
     # Install AUR packages with RuAUR
-    gpkgs=($(array ".packages.aur.gui"))
-    npkgs=($(array ".packages.aur.nemesis"))
-    pkgs=($(array ".packages.aur.default"))
-    [[ -z $(boolean "gui") ]] || pkgs+=(${gpkgs[@]})
-    [[ -z $(boolean "nemesis") ]] || pkgs+=(${npkgs[@]})
+    while read -r pkg; do
+        gpkgs+=("$pkg")
+    done < <(array ".packages.aur.gui"); unset pkg
+    while read -r pkg; do
+        npkgs+=("$pkg")
+    done < <(array ".packages.aur.nemesis-tools"); unset pkg
+    while read -r pkg; do
+        pkgs+=("$pkg")
+    done < <(array ".packages.aur.default"); unset pkg
+    [[ -z $(boolean "gui") ]] || pkgs+=("${gpkgs[@]}")
+    [[ -z $(boolean "nemesis-tools") ]] || pkgs+=("${npkgs[@]}")
     case "$action" in
         "install")
             local ruaur="/root/.gem/ruby/bin/ruaur --noconfirm"
-            if [[ -n ${pkgs[@]} ]]; then
-                run_in_chroot "${env[@]} $ruaur -S ${pkgs[@]}"
+            if [[ ${#pkgs[@]} -gt 0 ]]; then
+                run_in_chroot "${env[*]} $ruaur -S ${pkgs[*]}"
             fi
             ;;
         "postinstall")
             local ruaur="$HOME/.gem/ruby/bin/ruaur --noconfirm"
-            if [[ -n ${pkgs[@]} ]]; then
-                $ruaur -S ${pkgs[@]}
+            if [[ ${#pkgs[@]} -gt 0 ]]; then
+                $ruaur -S "${pkgs[@]}"
             fi
             check_if_fail $?
             ;;
@@ -356,16 +407,16 @@ install_packages() {
 
 partition_and_format_disk_bios() {
     # Wipe all signatures
-    while read part; do
-        wipefs --all --force $part
+    while read -r part; do
+        wipefs --all --force "$part"
         check_if_fail $?
-    done < <(lsblk -lp $1 | awk '!/NAME/ {print $1}' | sort -r)
+    done < <(lsblk -lp "$1" | awk '!/NAME/ {print $1}' | sort -r)
     unset part
 
     # Single bootable partition (ext4)
     case "$1" in
         "/dev/nvme"*)
-            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk $1
+            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
                 g  # clear the in memory partition table
                 n  # new partition
                 1  # partition 1
@@ -376,11 +427,11 @@ partition_and_format_disk_bios() {
 EOF
             check_if_fail $?
 
-            mkfs.ext4 ${1}p1
+            mkfs.ext4 "${1}p1"
             check_if_fail $?
             ;;
         *)
-            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk $1
+            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
                 o  # clear the in memory partition table
                 n  # new partition
                 p  # primary partition
@@ -393,7 +444,7 @@ EOF
 EOF
             check_if_fail $?
 
-            mkfs.ext4 ${1}1
+            mkfs.ext4 "${1}1"
             check_if_fail $?
             ;;
     esac
@@ -401,16 +452,16 @@ EOF
 
 partition_and_format_disk_uefi() {
     # Wipe all signatures
-    while read part; do
-        wipefs --all --force $part
+    while read -r part; do
+        wipefs --all --force "$part"
         check_if_fail $?
-    done < <(lsblk -lp $1 | awk '!/NAME/ {print $1}' | sort -r)
+    done < <(lsblk -lp "$1" | awk '!/NAME/ {print $1}' | sort -r)
     unset part
 
     # A small, bootable partition (EFI) and a larger partition (ext4)
     case "$1" in
         "/dev/nvme"*)
-            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk $1
+            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
                 g     # clear the in memory partition table
                 n     # new partition
                 1     # partition 1
@@ -427,14 +478,14 @@ partition_and_format_disk_uefi() {
 EOF
             check_if_fail $?
 
-            mkfs.fat ${1}p1
+            mkfs.fat "${1}p1"
             check_if_fail $?
 
-            mkfs.ext4 ${1}p2
+            mkfs.ext4 "${1}p2"
             check_if_fail $?
             ;;
         *)
-            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk $1
+            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
                 o     # clear the in memory partition table
                 n     # new partition
                 p     # primary partition
@@ -455,10 +506,10 @@ EOF
 EOF
             check_if_fail $?
 
-            mkfs.ext4 ${1}1
+            mkfs.ext4 "${1}1"
             check_if_fail $?
 
-            mkfs.ext4 ${1}2
+            mkfs.ext4 "${1}2"
             check_if_fail $?
             ;;
     esac
@@ -479,8 +530,8 @@ select_locale() {
 
 select_mirrors() {
     # Get preferred mirrors
-    \grep -A 1 "$(var "mirrors")" /etc/pacman.d/mirrorlist | \
-        \grep -v "\-\-" >/etc/pacman.d/mirrorlist.keep
+    grep -A 1 "$(var "mirrors")" /etc/pacman.d/mirrorlist | \
+        grep -v "\-\-" >/etc/pacman.d/mirrorlist.keep
     check_if_fail $?
 
     # Replace mirrors with preferred mirrors
@@ -489,66 +540,77 @@ select_mirrors() {
 }
 
 usage() {
-    echo "Usage: ${0/*\//} [OPTIONS] [dev]"
-    echo
-    echo "If no config is specified, it will print out the default"
-    echo "config. If a config is specified, it will install"
-    echo "ArchNemesis with the options specified in the config."
-    echo "Setting \"nemesis\" to \"false\" or empty means you only"
-    echo "want to install Arch Linux (and OpenBox if \"gui\" is"
-    echo "true)."
-    echo
-    echo "Options:"
-    echo "    -c, --config=CONFIG    Use specified json config"
-    echo "                           (default: $config)"
-    echo "    -h, --help             Display this help message"
-    echo "    --post-install         Only install missing packages"
-    echo
-    exit $1
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS] [dev]
+
+If no config is specified, it will print out the default config. If a
+config is specified, it will install ArchNemesis with the options
+specified in the config. Setting "nemesis-tools" to "false" or empty
+means you only want to install Arch Linux (and OpenBox if "gui" is
+true).
+
+Options:
+    -c, --config=CONFIG    Use specified json config
+    -h, --help             Display this help message
+    --nocolor              Disable colorized output
+    -p, --post-install     Only install missing packages
+
+EOF
+    exit "$1"
 }
 
-# Parse cli args
-
-declare -a args
-unset dev postinstall
+declare -a args deps
+unset config dev help postinstall
 action="print"
-config="/tmp/archnemesis.json"
+color="true"
+deps+=("perl")
 
+# Check for missing dependencies
+check_deps
+
+# Parse command line options
 while [[ $# -gt 0 ]]; do
     case "$1" in
         "--") shift && args+=("$@") && break ;;
         "-c"|"--config"*)
-            case "$1" in
-                "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || usage 1 ;;
-                *) shift; [[ $# -gt 0 ]] || usage 1; arg="$1" ;;
-            esac
-            config="$arg"
+            config="$(long_opt "$@")" || shift
             [[ $action == "postinstall" ]] || action="install"
             ;;
-        "-h"|"--help") usage 0 ;;
-        "--post-install") action="postinstall" ;;
+        "-h"|"--help") help="true" ;;
+        "--nocolor") unset color ;;
+        "-p"|"--post-install") action="postinstall" ;;
         *) args+=("$1") ;;
     esac
     shift
 done
-[[ -z ${args[@]} ]] || set -- "${args[@]}"
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
 
+# Check for valid params
+[[ -z $help ]] || usage 0
 case "$action" in
     "install")
-        [[ $# -le 1 ]] || usage 2
+        [[ $# -le 1 ]] || usage 1
+        [[ -n $config ]] || usage 2
         [[ $# -eq 0 ]] || dev="$1"
         if [[ -z $dev ]]; then
-            declare -a devs=($(lsblk -lp | awk '!/NAME/ {print $1}'))
+            declare -a devs
+            while read -r dev; do
+                devs+=("$dev")
+            done < <(lsblk -lp | awk '!/NAME/ {print $1}'); unset dev
             while :; do
                 clear && lsblk -lp && echo
-                read -p "Please enter target device: " dev
+                read -p "Please enter target device: " -r dev
                 [[ -n $dev ]] || continue
-                valid="$(echo " ${devs[@]} " | \grep -E " $dev ")"
+                valid="$(echo " ${devs[*]} " | grep -Ps "\s$dev\s")"
                 [[ -z $valid ]] || break
             done
         fi
         ;;
-    "postinstall"|"print") [[ $# -eq 0 ]] || usage 2 ;;
+    "postinstall")
+        [[ $# -eq 0 ]] || usage 1
+        [[ -n $config ]] || usage 2
+        ;;
+    "print") [[ $# -eq 0 ]] || usage 1 ;;
 esac
 
 # Default json
@@ -560,8 +622,9 @@ cat >/tmp/archnemesis.json <<EOF
     "loadkeys": "us",
     "locale": "en_US",
     "mirrors": "United States",
-    "nemesis": "true",
-    "ssh_port": "52288",
+    "nemesis-tools": "true",
+    "session": "openbox",
+    "ssh_port": "22",
     "timezone": "America/Indiana/Indianapolis"
   },
   "grub": {
@@ -570,28 +633,44 @@ cat >/tmp/archnemesis.json <<EOF
   "iptables": {
     "enable": "true",
     "iptables_rules": [
-      "*nat",
-      ":PREROUTING ACCEPT [0:0]",
-      ":INPUT ACCEPT [0:0]",
-      ":OUTPUT ACCEPT [0:0]",
-      ":POSTROUTING ACCEPT [0:0]",
-      "COMMIT",
       "*filter",
       ":INPUT DROP [0:0]",
       ":FORWARD DROP [0:0]",
       ":OUTPUT ACCEPT [0:0]",
       ":TCP - [0:0]",
       ":UDP - [0:0]",
+      "# Allow established",
       "-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+      "# Allow loopback",
       "-A INPUT -i lo -j ACCEPT",
+      "# Drop invalid",
       "-A INPUT -m conntrack --ctstate INVALID -j DROP",
+      "# Allow ping",
       "-A INPUT -p icmp -m icmp --icmp-type 8 -m conntrack --ctstate NEW -j ACCEPT",
-      "-A INPUT -p udp -m conntrack --ctstate NEW -j UDP",
+      "# Jump to TCP table for new tcp",
       "-A INPUT -p tcp -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -m conntrack --ctstate NEW -j TCP",
-      "-A INPUT -p udp -j REJECT --reject-with icmp-port-unreachable",
+      "# Otherwise reject tcp",
       "-A INPUT -p tcp -j REJECT --reject-with tcp-reset",
+      "# Jump to UDP table for new udp",
+      "-A INPUT -p udp -m conntrack --ctstate NEW -j UDP",
+      "# Otherwise reject udp",
+      "-A INPUT -p udp -j REJECT --reject-with icmp-port-unreachable",
+      "# Reject everything else",
       "-A INPUT -j REJECT --reject-with icmp-proto-unreachable",
-      "-A TCP -p tcp -m tcp --dport {{{ssh_port}}} -j ACCEPT",
+      "# Allow SSH with brute-force protection",
+      "-A TCP -p tcp -m multiport --dports {{{ssh_port}}} -m limit --limit 16/min --limit-burst 32 -j ACCEPT",
+      "COMMIT",
+      "*nat",
+      ":PREROUTING ACCEPT [0:0]",
+      ":INPUT ACCEPT [0:0]",
+      ":OUTPUT ACCEPT [0:0]",
+      ":POSTROUTING ACCEPT [0:0]",
+      "COMMIT",
+      "*raw",
+      ":PREROUTING ACCEPT [0:0]",
+      ":OUTPUT ACCEPT [19:2500]",
+      "-A PREROUTING -m rpfilter -j ACCEPT",
+      "-A PREROUTING -j DROP",
       "COMMIT"
     ],
     "ip6tables_rules": [
@@ -601,14 +680,28 @@ cat >/tmp/archnemesis.json <<EOF
       ":OUTPUT ACCEPT [0:0]",
       ":TCP - [0:0]",
       ":UDP - [0:0]",
+      "# Allow established",
       "-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+      "# Allow loopback",
       "-A INPUT -i lo -j ACCEPT",
+      "# Drop invalid",
       "-A INPUT -m conntrack --ctstate INVALID -j DROP",
+      "# Allow ping",
       "-A INPUT -p ipv6-icmp -m icmp6 --icmpv6-type 128 -m conntrack --ctstate NEW -j ACCEPT",
+      "# Allow IPv6 ICMP for router advertisements (add needed subnets)",
       "-A INPUT -s fe80::/10 -p ipv6-icmp -j ACCEPT",
-      "-A INPUT -p udp -m conntrack --ctstate NEW -j UDP",
+      "# Jump to TCP table for new tcp",
       "-A INPUT -p tcp -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -m conntrack --ctstate NEW -j TCP",
+      "# Otherwise reject tcp",
+      "-A INPUT -p tcp -j REJECT --reject-with tcp-reset",
+      "# Jump to UDP table for new udp",
+      "-A INPUT -p udp -m conntrack --ctstate NEW -j UDP",
+      "# Otherwise reject udp",
+      "-A INPUT -p udp -j REJECT --reject-with icmp6-port-unreachable",
+      "# Reject everything else",
       "-A INPUT -j REJECT --reject-with icmp6-port-unreachable",
+      "# Allow DHCPv6 (add needed subnets)",
+      "-A UDP -s fe80::/10 -p udp -m udp --dport 546 -m state --state NEW -j ACCEPT",
       "COMMIT",
       "*raw",
       ":PREROUTING ACCEPT [0:0]",
@@ -623,7 +716,7 @@ cat >/tmp/archnemesis.json <<EOF
     "lxdm_conf": {
       "autologin": "nemesis",
       "numlock": "1",
-      "session": "/usr/bin/openbox-session",
+      "session": "/usr/bin/{{{session}}}-session",
       "theme": "IndustrialArch"
     }
   },
@@ -652,14 +745,14 @@ cat >/tmp/archnemesis.json <<EOF
         "nessus",
         "samdump2"
       ],
-      "nemesis": [
+      "nemesis-tools": [
         "amap-bin",
         "dirb",
         "dirbuster",
         "httprint",
         "impacket-git",
         "isic",
-        "maltego-community",
+        "maltego",
         "rockyou",
         "vncrack",
         "xprobe2"
@@ -777,7 +870,7 @@ cat >/tmp/archnemesis.json <<EOF
       "xsel",
       "xterm"
     ],
-    "nemesis": [
+    "nemesis-tools": [
       "aircrack-ng",
       "binwalk",
       "clamav",
@@ -844,7 +937,7 @@ cat >/tmp/archnemesis.json <<EOF
   },
   "users": {
     "create": [
-      "nemesis:u4JBUrB9lhPsU"
+      "nemesis:nemesis"
     ]
   }
 }
@@ -855,20 +948,20 @@ EOF
 case "$action" in
     *"install")
         info "Checking internet connection..."
-        tmp="$(ping -c 1 8.8.8.8 | \grep "0% packet loss")"
-        [[ -n $tmp ]] || err 3 "No internet"
+        tmp="$(ping -c 1 8.8.8.8 | grep -s "0% packet loss")"
+        [[ -n $tmp ]] || errx 3 "No internet"
         info "Success"
 
         if [[ -z $(command -v jq) ]]; then
-            deps="http://deps.archnemesis.ninja"
-            curl -kLO "$deps/jq-1.5-5-x86_64.pkg.tar.xz"
-            curl -kLO "$deps/oniguruma-6.7.1-1-x86_64.pkg.tar.xz"
-            sudo pacman --needed --noconfirm -U *.pkg.tar.xz
+            depsurl="https://deps.archnemesis.ninja"
+            curl -kLO "$depsurl/jq-1.6-1-x86_64.pkg.tar.xz"
+            curl -kLO "$depsurl/oniguruma-6.9.0-1-x86_64.pkg.tar.xz"
+            sudo pacman --needed --noconfirm -U -- *.pkg.tar.xz
             check_if_fail $?
         fi
 
         info "Validating json config..."
-        cat $config | jq -cMrS "." >/dev/null
+        jq -cMrS "." >/dev/null "$config"
         check_if_fail $?
         info "Success"
         ;;
@@ -876,17 +969,17 @@ esac
 
 case "$action" in
     "install")
-        mounted="$(mount | \grep -Eo "$dev[0-9p]*")"
+        mounted="$(mount | grep -oPs "${dev}[0-9p]*")"
         [[ -z $mounted ]] || umount -R /mnt
-        mounted="$(mount | \grep -Eo "$dev[0-9p]*")"
-        [[ -z $mounted ]] || err 4 "Device already mounted"
+        mounted="$(mount | grep -oPs "${dev}[0-9p]*")"
+        [[ -z $mounted ]] || errx 4 "Device already mounted"
 
         boot_mode="BIOS"
         [[ ! -d /sys/firmware/efi/efivars ]] || boot_mode="UEFI"
 
         info "Selecting keyboard layout"
         loadkeys="$(var "loadkeys")"
-        loadkeys $loadkeys
+        loadkeys "$loadkeys"
         check_if_fail $?
 
         info "Updating system clock"
@@ -896,30 +989,30 @@ case "$action" in
         case "$boot_mode" in
             "BIOS")
                 info "Partitioning and formatting disk"
-                partition_and_format_disk_bios $dev
+                partition_and_format_disk_bios "$dev"
 
                 info "Mounting file system"
                 case "$dev" in
-                    "/dev/nvme"*) mount ${dev}p1 /mnt ;;
-                    *) mount ${dev}1 /mnt ;;
+                    "/dev/nvme"*) mount "${dev}p1" /mnt ;;
+                    *) mount "${dev}1" /mnt ;;
                 esac
                 check_if_fail $?
                 ;;
             "UEFI")
                 info "Partitioning and formatting disk"
-                partition_and_format_disk_uefi $dev
+                partition_and_format_disk_uefi "$dev"
 
                 info "Mounting file systems"
                 case "$dev" in
                     "/dev/nvme"*)
-                        mount ${dev}p2 /mnt
+                        mount "${dev}p2" /mnt
                         mkdir -p /mnt/boot
-                        mount ${dev}p1 /mnt/boot
+                        mount "${dev}p1" /mnt/boot
                         ;;
                     *)
-                        mount ${dev}2 /mnt
+                        mount "${dev}2" /mnt
                         mkdir -p /mnt/boot
-                        mount ${dev}1 /mnt/boot
+                        mount "${dev}1" /mnt/boot
                         ;;
                 esac
                 check_if_fail $?
@@ -954,16 +1047,16 @@ case "$action" in
         check_if_fail $?
 
         info "Saving hostname"
-        echo "$(var "hostname")" >/mnt/etc/hostname
+        var "hostname" >/mnt/etc/hostname
         check_if_fail $?
 
-        if [[ -n $(var "nemesis") ]]; then
+        if [[ -n $(var "nemesis-tools") ]]; then
             info "Enabling multilib in pacman.conf"
             enable_multilib /mnt/etc/pacman.conf
         fi
 
         info "Installing and configuring GRUB"
-        install_configure_enable_grub $dev
+        install_configure_enable_grub "$dev"
 
         info "Configuring and enabling networking"
         configure_enable_networking
@@ -998,7 +1091,7 @@ case "$action" in
         info "You can now reboot (remove installation media)"
         ;;
     "postinstall")
-        if [[ -n $(var "nemesis") ]]; then
+        if [[ -n $(var "nemesis-tools") ]]; then
             info "Enabling multilib in pacman.conf"
             enable_multilib /etc/pacman.conf
         fi
