@@ -825,6 +825,7 @@ cat >/tmp/archnemesis.json <<EOF
       "compton",
       "dunst",
       "flameshot",
+      "gtk2-perl",
       "gvim",
       "mupdf",
       "nitrogen",
