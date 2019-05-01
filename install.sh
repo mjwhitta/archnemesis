@@ -7,7 +7,7 @@ check_deps() {
     done; unset d
 }
 err() { echo -e "${color:+\e[31m}[!] $*\e[0m"; }
-errx() { echo -e "${color:+\e[31m}[!] ${*:2}\e[0m"; exit "$1"; }
+errx() { err "${*:2}"; exit "$1"; }
 good() { echo -e "${color:+\e[32m}[+] $*\e[0m"; }
 info() { echo -e "${color:+\e[37m}[*] $*\e[0m"; }
 long_opt() {
@@ -321,13 +321,13 @@ install_packages() {
     done < <(array ".packages.gui"); unset pkg
     while read -r pkg; do
         npkgs+=("$pkg")
-    done < <(array ".packages.nemesis-tools"); unset pkg
+    done < <(array ".packages.nemesis_tools"); unset pkg
     while read -r pkg; do
         pkgs+=("$pkg")
     done < <(array ".packages.default"); unset pkg
 
     [[ -z $(boolean "gui") ]] || pkgs=("${pkgs[@]/vim}" "${gpkgs[@]}")
-    if [[ -n $(boolean "nemesis-tools") ]]; then
+    if [[ -n $(boolean "nemesis_tools") ]]; then
         pkgs=("${pkgs[@]/gcc}" "${npkgs[@]}")
     fi
 
@@ -382,12 +382,12 @@ install_packages() {
     done < <(array ".packages.aur.gui"); unset pkg
     while read -r pkg; do
         npkgs+=("$pkg")
-    done < <(array ".packages.aur.nemesis-tools"); unset pkg
+    done < <(array ".packages.aur.nemesis_tools"); unset pkg
     while read -r pkg; do
         pkgs+=("$pkg")
     done < <(array ".packages.aur.default"); unset pkg
     [[ -z $(boolean "gui") ]] || pkgs+=("${gpkgs[@]}")
-    [[ -z $(boolean "nemesis-tools") ]] || pkgs+=("${npkgs[@]}")
+    [[ -z $(boolean "nemesis_tools") ]] || pkgs+=("${npkgs[@]}")
     case "$action" in
         "install")
             local ruaur="/root/.gem/ruby/bin/ruaur --noconfirm"
@@ -545,14 +545,14 @@ Usage: ${0##*/} [OPTIONS] [dev]
 
 If no config is specified, it will print out the default config. If a
 config is specified, it will install ArchNemesis with the options
-specified in the config. Setting "nemesis-tools" to "false" or empty
+specified in the config. Setting "nemesis_tools" to "false" or empty
 means you only want to install Arch Linux (and OpenBox if "gui" is
 true).
 
 Options:
     -c, --config=CONFIG    Use specified json config
     -h, --help             Display this help message
-    --nocolor              Disable colorized output
+    --no-color             Disable colorized output
     -p, --post-install     Only install missing packages
 
 EOF
@@ -577,7 +577,7 @@ while [[ $# -gt 0 ]]; do
             [[ $action == "postinstall" ]] || action="install"
             ;;
         "-h"|"--help") help="true" ;;
-        "--nocolor") unset color ;;
+        "--no-color") unset color ;;
         "-p"|"--post-install") action="postinstall" ;;
         *) args+=("$1") ;;
     esac
@@ -622,7 +622,7 @@ cat >/tmp/archnemesis.json <<EOF
     "loadkeys": "us",
     "locale": "en_US",
     "mirrors": "United States",
-    "nemesis-tools": "true",
+    "nemesis_tools": "true",
     "session": "openbox",
     "ssh_port": "22",
     "timezone": "America/Indiana/Indianapolis"
@@ -742,20 +742,20 @@ cat >/tmp/archnemesis.json <<EOF
       ],
       "ignore": [
         "burpsuite",
+        "httprint",
         "nessus",
-        "samdump2"
+        "samdump2",
+        "xprobe2"
       ],
-      "nemesis-tools": [
+      "nemesis_tools": [
         "amap-bin",
         "dirb",
         "dirbuster",
-        "httprint",
         "impacket-git",
         "isic",
         "maltego",
         "rockyou",
-        "vncrack",
-        "xprobe2"
+        "vncrack"
       ]
     },
     "default": [
@@ -870,7 +870,7 @@ cat >/tmp/archnemesis.json <<EOF
       "xsel",
       "xterm"
     ],
-    "nemesis-tools": [
+    "nemesis_tools": [
       "aircrack-ng",
       "binwalk",
       "clamav",
@@ -1050,7 +1050,7 @@ case "$action" in
         var "hostname" >/mnt/etc/hostname
         check_if_fail $?
 
-        if [[ -n $(var "nemesis-tools") ]]; then
+        if [[ -n $(var "nemesis_tools") ]]; then
             info "Enabling multilib in pacman.conf"
             enable_multilib /mnt/etc/pacman.conf
         fi
@@ -1091,7 +1091,7 @@ case "$action" in
         info "You can now reboot (remove installation media)"
         ;;
     "postinstall")
-        if [[ -n $(var "nemesis-tools") ]]; then
+        if [[ -n $(var "nemesis_tools") ]]; then
             info "Enabling multilib in pacman.conf"
             enable_multilib /etc/pacman.conf
         fi
