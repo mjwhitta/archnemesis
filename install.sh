@@ -775,7 +775,7 @@ cat >/tmp/archnemesis.json <<EOF
       "gzip",
       "htop",
       "iproute2",
-      "jdk8-openjdk",
+      "jdk-openjdk",
       "jq",
       "lua",
       "mlocate",
