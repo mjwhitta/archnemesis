@@ -91,6 +91,16 @@ var() { json_get ".vars.$1"; }
 
 ## Configuration functions
 
+add_users_to_groups() {
+    # Loop thru users and add to specified group
+    local entry groups username
+    while read -r entry; do
+        groups="${entry#*:}"
+        username="${entry%%:*}"
+        run_in_chroot "usermod -aG \"$groups\" $username"
+    done < <(array ".users.groups"); unset entry
+}
+
 configure_enable_networking() {
     # Configure dhcp
     array ".network.dhcp_network" \
@@ -108,23 +118,22 @@ configure_enable_networking() {
 
 create_users() {
     # Loop thru users and create them
+    local configs creds crypt password username
     while read -r creds; do
-        local password="${creds#*:}"
-        local username="${creds%%:*}"
-        local crypt="$(
-            perl -e "print crypt(\"$password\", \"$RANDOM\")"
-        )"
+        password="${creds#*:}"
+        username="${creds%%:*}"
+        crypt="$(perl -e "print crypt(\"$password\", \"$RANDOM\")")"
         run_in_chroot "useradd -mp \"$crypt\" -U $username"
 
         # Autostart tint2 for openbox sessions
         if [[ -n $(boolean "gui") ]]; then
             case "$(var "session")" in
                 "openbox")
-                    local configs="/mnt/home/$username/.config"
+                    configs="/mnt/home/$username/.config"
                     mkdir -p "$configs/openbox"
                     echo "tint2 &" >"$configs/openbox/autostart"
-                    run_in_chroot "chown -R $username ${configs#/mnt}"
-                    run_in_chroot "chgrp -R $username ${configs#/mnt}"
+                    run_in_chroot \
+                        "chown -R $username:$username ${configs#/mnt}"
                     ;;
             esac
         fi
@@ -135,7 +144,7 @@ customize() {
     echo "Recommended actions include:"
     echo "    - Create new users"
     echo "    - Set user passwords (if authorized_keys not provided)"
-    echo "    - Change the preferred shell (zsh)"
+    echo "    - Change the preferred shell (maybe to zsh)"
     echo "    - Install additional packages"
     echo "    - Modify config files"
 
@@ -172,6 +181,7 @@ install_configure_enable_iptables() {
     run_in_chroot "pacman --needed --noconfirm -S iptables"
 
     # Create rules files
+    local fw
     for fw in iptables ip6tables; do
         array ".iptables.${fw}_rules" >/mnt/etc/iptables/${fw}.rules
         check_if_fail $?
@@ -192,8 +202,9 @@ install_configure_enable_lxdm() {
     run_in_chroot "pacman --needed --noconfirm -S lxdm"
 
     # Update lxdm.conf
+    local key val
     while read -r key; do
-        local val="$(json_get ".lxdm.lxdm_conf.$key")"
+        val="$(json_get ".lxdm.lxdm_conf.$key")"
         [[ -n $val ]] || continue
         sed -i -r "s|^#? ?($key)=.*|\\1=$val|" /mnt/etc/lxdm/lxdm.conf
         check_if_fail $?
@@ -224,8 +235,9 @@ install_configure_enable_ssh() {
     run_in_chroot "pacman --needed --noconfirm -S openssh"
 
     # Update sshd_config
+    local key val
     while read -r key; do
-        local val="$(json_get ".ssh.sshd_config.$key")"
+        val="$(json_get ".ssh.sshd_config.$key")"
         [[ -n $val ]] || continue
         sed -i -r "s|^#?($key) .*|\\1 $val|" /mnt/etc/ssh/sshd_config
         check_if_fail $?
@@ -237,8 +249,8 @@ install_configure_enable_ssh() {
     fi
 
     # Configure initial ~/.ssh/authorized_keys
+    local homedir
     while read -r key; do
-        local homedir
         case "$key" in
             "root") homedir="/mnt/root" ;;
             *) homedir="/mnt/home/$key" ;;
@@ -261,7 +273,6 @@ install_configure_enable_ssh() {
     # Configure initial ~/.ssh/config
     local hostname="$(var "hostname")"
     while read -r key; do
-        local homedir
         case "$key" in
             "root") homedir="/mnt/root" ;;
             *) homedir="/mnt/home/$key" ;;
@@ -289,8 +300,9 @@ install_configure_enable_grub() {
     run_in_chroot "pacman --needed --noconfirm -S grub"
 
     # Update /etc/default/grub
+    local key val
     while read -r key; do
-        local val="$(json_get ".grub.grub.$key")"
+        val="$(json_get ".grub.grub.$key")"
         [[ -n $val ]] || continue
         sed -i -r "s|^($key)\\=[0-9]+|\\1=$val|" /mnt/etc/default/grub
         check_if_fail $?
@@ -315,15 +327,14 @@ install_configure_enable_grub() {
 
 install_packages() {
     # Install packages with pacman
+    local pkg
     local -a pkgs
     while read -r pkg; do
         case "$pkg" in
             "gcc")
                 [[ -n $(boolean "nemesis_tools") ]] || pkgs+=("$pkg")
                 ;;
-            "vim")
-                [[ -n $(boolean "gui") ]] || pkgs+=("$pkg")
-                ;;
+            "vim") [[ -n $(boolean "gui") ]] || pkgs+=("$pkg") ;;
             *) pkgs+=("$pkg") ;;
         esac
     done < <(array ".packages.default"); unset pkg
@@ -359,7 +370,7 @@ install_packages() {
         "GEM_HOME=/root/.gem/ruby"
         "GEM_PATH=/root/.gem/ruby/gems"
     )
-    local gem="gem install --no-user-install"
+    local gem="gem install --no-format-executable --no-user-install"
     case "$action" in
         "install")
             run_in_chroot "pacman --needed --noconfirm -S ruby"
@@ -421,6 +432,7 @@ install_packages() {
 
 partition_and_format_disk_bios() {
     # Wipe all signatures
+    local part
     while read -r part; do
         wipefs --all --force "$part"
         check_if_fail $?
@@ -466,6 +478,7 @@ EOF
 
 partition_and_format_disk_uefi() {
     # Wipe all signatures
+    local part
     while read -r part; do
         wipefs --all --force "$part"
         check_if_fail $?
@@ -637,6 +650,7 @@ cat >/tmp/archnemesis.json <<EOF
     "locale": "en_US",
     "mirrors": "United States",
     "nemesis_tools": "true",
+    "primary_user": "nemesis",
     "session": "openbox",
     "ssh_port": "22",
     "timezone": "America/Indiana/Indianapolis"
@@ -728,7 +742,7 @@ cat >/tmp/archnemesis.json <<EOF
   "lxdm": {
     "enable": "{{{gui}}}",
     "lxdm_conf": {
-      "autologin": "nemesis",
+      "autologin": "{{{primary_user}}}",
       "numlock": "1",
       "session": "/usr/bin/{{{session}}}-session",
       "theme": "IndustrialArch"
@@ -756,7 +770,6 @@ cat >/tmp/archnemesis.json <<EOF
       ],
       "ignore": [
         "burpsuite",
-        "httprint",
         "nessus",
         "samdump2",
         "xprobe2"
@@ -765,6 +778,7 @@ cat >/tmp/archnemesis.json <<EOF
         "amap-bin",
         "dirb",
         "dirbuster",
+        "httprint",
         "impacket-git",
         "isic",
         "maltego",
@@ -930,9 +944,10 @@ cat >/tmp/archnemesis.json <<EOF
       "nemesis": [
         "# No agent or X11 forwarding",
         "Host *",
-        "    IdentityFile ~/.ssh/{{{hostname}}}",
         "    ForwardAgent no",
         "    ForwardX11 no",
+        "    HashKnownHosts yes",
+        "    IdentityFile ~/.ssh/{{{hostname}}}",
         "    LogLevel Error"
       ],
       "root": []
@@ -951,6 +966,9 @@ cat >/tmp/archnemesis.json <<EOF
   "users": {
     "create": [
       "nemesis:nemesis"
+    ],
+    "groups": [
+      "nemesis:users,wireshark"
     ]
   }
 }
@@ -1074,11 +1092,11 @@ case "$action" in
         info "Configuring and enabling networking"
         configure_enable_networking
 
-        info "Creating users"
-        create_users
-
         info "Installing/Configuring/Enabling iptables"
         install_configure_enable_iptables
+
+        info "Creating users"
+        create_users
 
         info "Installing/Configuring/Enabling SSH"
         install_configure_enable_ssh
@@ -1093,6 +1111,9 @@ case "$action" in
 
         info "Installing user requested packages"
         install_packages
+
+        info "Adding users to requested groups"
+        add_users_to_groups
 
         info "User customizations"
         customize
