@@ -893,7 +893,6 @@ cat >/tmp/archnemesis.json <<EOF
       "net-snmp",
       "nikto",
       "nmap",
-      "openvas-cli",
       "openvas-libraries",
       "openvas-manager",
       "openvas-scanner",
@@ -903,7 +902,7 @@ cat >/tmp/archnemesis.json <<EOF
       "socat",
       "sqlmap",
       "tcpdump",
-      "wireshark-gtk",
+      "wireshark-qt",
       "zaproxy",
       "zmap"
     ]
