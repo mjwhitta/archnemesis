@@ -114,7 +114,7 @@ create_users() {
         local crypt="$(
             perl -e "print crypt(\"$password\", \"$RANDOM\")"
         )"
-        run_in_chroot "useradd -m -p \"$crypt\" -U $username"
+        run_in_chroot "useradd -mp \"$crypt\" -U $username"
 
         # Autostart tint2 for openbox sessions
         if [[ -n $(boolean "gui") ]]; then
@@ -315,20 +315,29 @@ install_configure_enable_grub() {
 
 install_packages() {
     # Install packages with pacman
-    local -a gpkgs npkgs pkgs
+    local -a pkgs
     while read -r pkg; do
-        gpkgs+=("$pkg")
-    done < <(array ".packages.gui"); unset pkg
-    while read -r pkg; do
-        npkgs+=("$pkg")
-    done < <(array ".packages.nemesis_tools"); unset pkg
-    while read -r pkg; do
-        pkgs+=("$pkg")
+        case "$pkg" in
+            "gcc")
+                [[ -n $(boolean "nemesis_tools") ]] || pkgs+=("$pkg")
+                ;;
+            "vim")
+                [[ -n $(boolean "gui") ]] || pkgs+=("$pkg")
+                ;;
+            *) pkgs+=("$pkg") ;;
+        esac
     done < <(array ".packages.default"); unset pkg
 
-    [[ -z $(boolean "gui") ]] || pkgs=("${pkgs[@]/vim}" "${gpkgs[@]}")
+    if [[ -n $(boolean "gui") ]]; then
+        while read -r pkg; do
+            pkgs+=("$pkg")
+        done < <(array ".packages.gui"); unset pkg
+    fi
+
     if [[ -n $(boolean "nemesis_tools") ]]; then
-        pkgs=("${pkgs[@]/gcc}" "${npkgs[@]}")
+        while read -r pkg; do
+            pkgs+=("$pkg")
+        done < <(array ".packages.nemesis_tools"); unset pkg
     fi
 
     case "$action" in
@@ -374,20 +383,25 @@ install_packages() {
     esac
 
     # Reset
-    unset gpkgs npkgs pkgs
+    unset pkgs
 
     # Install AUR packages with RuAUR
     while read -r pkg; do
-        gpkgs+=("$pkg")
-    done < <(array ".packages.aur.gui"); unset pkg
-    while read -r pkg; do
-        npkgs+=("$pkg")
-    done < <(array ".packages.aur.nemesis_tools"); unset pkg
-    while read -r pkg; do
         pkgs+=("$pkg")
     done < <(array ".packages.aur.default"); unset pkg
-    [[ -z $(boolean "gui") ]] || pkgs+=("${gpkgs[@]}")
-    [[ -z $(boolean "nemesis_tools") ]] || pkgs+=("${npkgs[@]}")
+
+    if [[ -n $(boolean "gui") ]]; then
+        while read -r pkg; do
+            pkgs+=("$pkg")
+        done < <(array ".packages.aur.gui"); unset pkg
+    fi
+
+    if [[ -n $(boolean "nemesis_tools") ]]; then
+        while read -r pkg; do
+            pkgs+=("$pkg")
+        done < <(array ".packages.aur.nemesis_tools"); unset pkg
+    fi
+
     case "$action" in
         "install")
             local ruaur="/root/.gem/ruby/bin/ruaur --noconfirm"
