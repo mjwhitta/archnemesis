@@ -967,8 +967,8 @@ case "$action" in
 
         if [[ -z $(command -v jq) ]]; then
             depsurl="https://deps.archnemesis.ninja"
-            curl -kLO "$depsurl/jq-1.6-1-x86_64.pkg.tar.xz"
-            curl -kLO "$depsurl/oniguruma-6.9.0-1-x86_64.pkg.tar.xz"
+            curl -kLO "$depsurl/jq-1.6-2-x86_64.pkg.tar.xz"
+            curl -kLO "$depsurl/oniguruma-6.9.2-1-x86_64.pkg.tar.xz"
             sudo pacman --needed --noconfirm -U -- *.pkg.tar.xz
             check_if_fail $?
         fi
