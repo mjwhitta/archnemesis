@@ -2,9 +2,17 @@
 
 ### Helpers begin
 check_deps() {
+    local missing
     for d in "${deps[@]}"; do
-        [[ -n $(command -v "$d") ]] || errx 128 "$d is not installed"
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -f "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
     done; unset d
+    [[ -z $missing ]] || exit 128
 }
 err() { echo -e "${color:+\e[31m}[!] $*\e[0m"; }
 errx() { err "${*:2}"; exit "$1"; }
@@ -779,7 +787,6 @@ cat >/tmp/archnemesis.json <<EOF
         "dirb",
         "dirbuster",
         "httprint",
-        "impacket-git",
         "isic",
         "maltego",
         "rockyou",
@@ -799,6 +806,7 @@ cat >/tmp/archnemesis.json <<EOF
       "gcc",
       "gdb",
       "git",
+      "git-crypt",
       "go",
       "gzip",
       "htop",
@@ -870,13 +878,7 @@ cat >/tmp/archnemesis.json <<EOF
       "tilda",
       "tilix",
       "tint2",
-      "ttf-croscore",
       "ttf-dejavu",
-      "ttf-droid",
-      "ttf-freefont",
-      "ttf-liberation",
-      "ttf-linux-libertine",
-      "ttf-ubuntu-font-family",
       "viewnior",
       "wmctrl",
       "x11-ssh-askpass",
@@ -896,6 +898,7 @@ cat >/tmp/archnemesis.json <<EOF
       "xorg-xmodmap",
       "xorg-xrandr",
       "xorg-xrdb",
+      "xscreensaver",
       "xsel",
       "xterm"
     ],
@@ -915,6 +918,7 @@ cat >/tmp/archnemesis.json <<EOF
       "hashcat-utils",
       "hping",
       "hydra",
+      "impacket",
       "john",
       "masscan",
       "metasploit",
