@@ -41,7 +41,7 @@ $ curl -kLs "https://post-install.archnemesis.ninja" | bash
 1. Download the install script
 
     ```
-    $ curl -kL -o install.sh -s "http://install.archmemesis.ninja"
+    $ curl -kL -o install.sh -s "https://install.archmemesis.ninja"
     $ chmod 700 install.sh
     ```
 
@@ -87,7 +87,7 @@ $ curl -kLs "https://post-install.archnemesis.ninja" | bash
 4. Download the install script (unless you prep'd on same machine)
 
     ```
-    $ curl -kL -o install.sh -s "http://install.archmemesis.ninja"
+    $ curl -kL -o install.sh -s "https://install.archmemesis.ninja"
     $ chmod 700 install.sh
     ```
 
@@ -106,7 +106,7 @@ skip most of the configuration and just install any missing packages.
 1. Download the install script
 
     ```
-    $ curl -kL -o install.sh -s "http://install.archmemesis.ninja"
+    $ curl -kL -o install.sh -s "https://install.archmemesis.ninja"
     $ chmod 700 install.sh
     ```
 

@@ -132,19 +132,6 @@ create_users() {
         username="${creds%%:*}"
         crypt="$(perl -e "print crypt(\"$password\", \"$RANDOM\")")"
         run_in_chroot "useradd -mp \"$crypt\" -U $username"
-
-        # Autostart tint2 for openbox sessions
-        if [[ -n $(boolean "gui") ]]; then
-            case "$(var "session")" in
-                "openbox")
-                    configs="/mnt/home/$username/.config"
-                    mkdir -p "$configs/openbox"
-                    echo "tint2 &" >"$configs/openbox/autostart"
-                    run_in_chroot \
-                        "chown -R $username:$username ${configs#/mnt}"
-                    ;;
-            esac
-        fi
     done < <(array ".users.create"); unset creds
 }
 
@@ -206,20 +193,21 @@ install_configure_enable_iptables() {
 }
 
 install_configure_enable_lxdm() {
-    # Install LXDM
-    run_in_chroot "pacman --needed --noconfirm -S lxdm"
-
-    # Update lxdm.conf
-    local key val
-    while read -r key; do
-        val="$(json_get ".lxdm.lxdm_conf.$key")"
-        [[ -n $val ]] || continue
-        sed -i -r "s|^#? ?($key)=.*|\\1=$val|" /mnt/etc/lxdm/lxdm.conf
-        check_if_fail $?
-    done < <(hash_keys ".lxdm.lxdm_conf"); unset key
-
-    # Enable service
     if [[ -n $(boolean ".lxdm.enable") ]]; then
+        # Install LXDM
+        run_in_chroot "pacman --needed --noconfirm -S lxdm"
+
+        # Update lxdm.conf
+        local key val
+        while read -r key; do
+            val="$(json_get ".lxdm.lxdm_conf.$key")"
+            [[ -n $val ]] || continue
+            sed -i -r "s|^#? ?($key)=.*|\\1=$val|" \
+                /mnt/etc/lxdm/lxdm.conf
+            check_if_fail $?
+        done < <(hash_keys ".lxdm.lxdm_conf"); unset key
+
+        # Enable service
         run_in_chroot "systemctl enable lxdm.service"
     fi
 }
@@ -236,6 +224,20 @@ install_configure_enable_networkmanager() {
 
     # Enable service
     run_in_chroot "systemctl enable NetworkManager.service"
+}
+
+install_configure_enable_sddm() {
+    if [[ -n $(boolean ".sddm.enable") ]]; then
+        # Install SDDM
+        run_in_chroot "pacman --needed --noconfirm -S sddm"
+
+        # Configure SDDM
+        mkdir -p /mnt/etc/sddm.conf.d
+        array ".sddm.sddm_conf" >/mnt/etc/sddm.conf.d/default.conf
+
+        # Enable service
+        run_in_chroot "systemctl enable sddm.service"
+    fi
 }
 
 install_configure_enable_ssh() {
@@ -312,7 +314,7 @@ install_configure_enable_grub() {
     while read -r key; do
         val="$(json_get ".grub.grub.$key")"
         [[ -n $val ]] || continue
-        sed -i -r "s|^($key)\\=[0-9]+|\\1=$val|" /mnt/etc/default/grub
+        sed -i -r "s|^($key)\\=.*|\\1=$val|" /mnt/etc/default/grub
         check_if_fail $?
     done < <(hash_keys ".grub.grub"); unset key
 
@@ -581,8 +583,7 @@ Usage: ${0##*/} [OPTIONS] [dev]
 If no config is specified, it will print out the default config. If a
 config is specified, it will install ArchNemesis with the options
 specified in the config. Setting "nemesis_tools" to "false" or empty
-means you only want to install Arch Linux (and OpenBox if "gui" is
-true).
+means you only want to install Arch Linux (and LXQT if "gui" is true).
 
 Options:
     -c, --config=CONFIG    Use specified json config
@@ -659,7 +660,7 @@ cat >/tmp/archnemesis.json <<EOF
     "mirrors": "United States",
     "nemesis_tools": "true",
     "primary_user": "nemesis",
-    "session": "openbox",
+    "session": "lxqt",
     "ssh_port": "22",
     "timezone": "America/Indiana/Indianapolis"
   },
@@ -784,13 +785,23 @@ cat >/tmp/archnemesis.json <<EOF
     ]
   },
   "lxdm": {
-    "enable": "{{{gui}}}",
+    "enable": "false",
     "lxdm_conf": {
       "autologin": "{{{primary_user}}}",
       "numlock": "1",
-      "session": "/usr/bin/{{{session}}}-session",
-      "theme": "IndustrialArch"
+      "session": "/usr/bin/{{{session}}}-session"
     }
+  },
+  "sddm": {
+    "enable": "{{{gui}}}",
+    "sddm_conf": [
+      "[Autologin]",
+      "User={{{primary_user}}}",
+      "Session={{{session}}}.desktop",
+      "",
+      "[General]",
+      "Numlock=on"
+    ]
   },
   "network": {
     "dhcp_network": [
@@ -803,17 +814,11 @@ cat >/tmp/archnemesis.json <<EOF
   },
   "packages": {
     "aur": {
-      "default": [
-        "urlview",
-        "zsh-history-substring-search"
-      ],
-      "gui": [
-        "lxdm-themes",
-        "obmenu-generator",
-        "pa-applet-git"
-      ],
-      "ignore": [
+      "default": [],
+      "gui": [],
+      "misc": [
         "burpsuite",
+        "maltego",
         "nessus",
         "samdump2",
         "xprobe2"
@@ -824,7 +829,6 @@ cat >/tmp/archnemesis.json <<EOF
         "dirbuster",
         "httprint",
         "isic",
-        "maltego",
         "rockyou",
         "vncrack"
       ]
@@ -838,6 +842,7 @@ cat >/tmp/archnemesis.json <<EOF
       "cronie",
       "ctags",
       "curl",
+      "dnsmasq",
       "exfat-utils",
       "gcc",
       "gdb",
@@ -866,8 +871,6 @@ cat >/tmp/archnemesis.json <<EOF
       "pygmentize",
       "python",
       "python-pip",
-      "python2",
-      "python2-pip",
       "ranger",
       "ripgrep",
       "rsync",
@@ -886,6 +889,7 @@ cat >/tmp/archnemesis.json <<EOF
       "zip",
       "zsh",
       "zsh-completions",
+      "zsh-history-substring-search",
       "zsh-syntax-highlighting"
     ],
     "gui": [
@@ -896,24 +900,19 @@ cat >/tmp/archnemesis.json <<EOF
       "chromium",
       "clusterssh",
       "compton",
-      "dunst",
       "flameshot",
-      "gtk2-perl",
       "gvim",
+      "lxqt",
       "mupdf",
-      "nitrogen",
       "noto-fonts",
-      "oblogout",
       "openbox",
       "pamixer",
-      "pavucontrol",
-      "pcmanfm",
+      "pavucontrol-qt",
+      "pcmanfm-qt",
       "pulseaudio",
       "pulseaudio-bluetooth",
       "rofi",
-      "tilda",
       "tilix",
-      "tint2",
       "ttf-dejavu",
       "viewnior",
       "wmctrl",
@@ -922,8 +921,6 @@ cat >/tmp/archnemesis.json <<EOF
       "xclip",
       "xdg-user-dirs",
       "xdotool",
-      "xf86-input-keyboard",
-      "xf86-input-mouse",
       "xf86-input-synaptics",
       "xf86-video-ati",
       "xf86-video-intel",
@@ -938,12 +935,16 @@ cat >/tmp/archnemesis.json <<EOF
       "xsel",
       "xterm"
     ],
+    "misc": [
+      "dunst",
+      "nitrogen",
+      "tilda"
+    ],
     "nemesis_tools": [
       "aircrack-ng",
       "binwalk",
       "clamav",
       "cowpatty",
-      "dnsmasq",
       "expect",
       "fcrackzip",
       "firejail",
@@ -962,11 +963,11 @@ cat >/tmp/archnemesis.json <<EOF
       "net-snmp",
       "nikto",
       "nmap",
-      "openvas-libraries",
-      "openvas-manager",
-      "openvas-scanner",
+      "openvas",
       "ophcrack",
       "pyrit",
+      "python2",
+      "python2-pip",
       "radare2",
       "sqlmap",
       "tcpdump",
@@ -1023,13 +1024,8 @@ case "$action" in
         [[ -n $tmp ]] || errx 3 "No internet"
         info "Success"
 
-        if [[ -z $(command -v jq) ]]; then
-            depsurl="https://deps.archnemesis.ninja"
-            curl -kLO "$depsurl/jq-1.6-2-x86_64.pkg.tar.xz"
-            curl -kLO "$depsurl/oniguruma-6.9.2-1-x86_64.pkg.tar.xz"
-            sudo pacman --needed --noconfirm -U -- *.pkg.tar.xz
-            check_if_fail $?
-        fi
+        sudo pacman --noconfirm -Syy
+        sudo pacman --needed --noconfirm -S jq oniguruma
 
         info "Validating json config..."
         jq -cMrS "." >/dev/null "$config"
@@ -1094,7 +1090,7 @@ case "$action" in
         select_mirrors
 
         info "Installing base packages"
-        pacstrap /mnt base base-devel
+        pacstrap /mnt base base-devel linux linux-firmware
         check_if_fail $?
 
         info "Configuring the system"
@@ -1121,7 +1117,7 @@ case "$action" in
         var "hostname" >/mnt/etc/hostname
         check_if_fail $?
 
-        if [[ -n $(var "nemesis_tools") ]]; then
+        if [[ -n $(boolean "nemesis_tools") ]]; then
             info "Enabling multilib in pacman.conf"
             enable_multilib /mnt/etc/pacman.conf
         fi
@@ -1145,8 +1141,9 @@ case "$action" in
             info "Installing/Configuring/Enabling NetworkManager"
             install_configure_enable_networkmanager
 
-            info "Installing/Configuring/Enabling LXDM"
+            info "Installing/Configuring/Enabling Desktop Manager"
             install_configure_enable_lxdm
+            install_configure_enable_sddm
         fi
 
         info "Installing user requested packages"
@@ -1165,7 +1162,7 @@ case "$action" in
         info "You can now reboot (remove installation media)"
         ;;
     "postinstall")
-        if [[ -n $(var "nemesis_tools") ]]; then
+        if [[ -n $(boolean "nemesis_tools") ]]; then
             info "Enabling multilib in pacman.conf"
             enable_multilib /etc/pacman.conf
         fi
