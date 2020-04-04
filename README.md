@@ -64,8 +64,7 @@ $ curl -kLs "https://post-install.archnemesis.ninja" | bash
 ### Installing
 
 1. Get an Arch installation ISO from the [Arch Linux Downloads] page
-
-[Arch Linux Downloads]: https://www.archlinux.org/download/
+    - Currently tested with archlinux-2020.03.01-x86_64.iso
 
 2. Boot it up and wait for the shell prompt
 
@@ -124,3 +123,5 @@ skip most of the configuration and just install any missing packages.
     - Store progress
         - Continue from where you left off, if error encountered
     - dm-crypt +/- LUKS
+
+[Arch Linux Downloads]: https://www.archlinux.org/download/

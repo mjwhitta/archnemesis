@@ -57,11 +57,13 @@ check_if_fail() {
 
 # Get value from json and replace placeholders with variable values
 json_get() {
+    local new
+
     while read -r line; do
         [[ $line != "null" ]] || continue
 
         while read -r replace; do
-            local new="${replace#\{\{\{}"
+            new="${replace#\{\{\{}"
             new="${new%\}\}\}}"
             new="$(var "$new")"
             line="${line//$replace/$new}"
@@ -100,11 +102,17 @@ var() { json_get ".vars.$1"; }
 ## Configuration functions
 
 add_users_to_groups() {
+    local entry group groups username
+
     # Loop thru users and add to specified group
-    local entry groups username
     while read -r entry; do
         groups="${entry#*:}"
         username="${entry%%:*}"
+
+        while read -r group; do
+            run_in_chroot "groupadd -f $group"
+        done < <(echo "$groups" | sed "s/,/\n/g"); unset group
+
         run_in_chroot "usermod -aG \"$groups\" $username"
     done < <(array ".users.groups"); unset entry
 }
@@ -125,8 +133,9 @@ configure_enable_networking() {
 }
 
 create_users() {
-    # Loop thru users and create them
     local configs creds crypt password username
+
+    # Loop thru users and create them
     while read -r creds; do
         password="${creds#*:}"
         username="${creds%%:*}"
@@ -136,6 +145,8 @@ create_users() {
 }
 
 customize() {
+    local ans
+
     echo "Recommended actions include:"
     echo "    - Create new users"
     echo "    - Set user passwords (if authorized_keys not provided)"
@@ -143,7 +154,6 @@ customize() {
     echo "    - Install additional packages"
     echo "    - Modify config files"
 
-    local ans
     while :; do
         read -p "Drop into a shell? (y/N) " -r ans
         case "$ans" in
@@ -154,11 +164,13 @@ customize() {
 }
 
 enable_multilib() {
+    local inc
+
     # Return if already uncommented
     [[ -n $(grep -Ps "#\[multilib\]" "$1") ]] || return
 
     # Uncomment out the multilib line
-    local inc="/etc/pacman.d/mirrorlist"
+    inc="/etc/pacman.d/mirrorlist"
     sed -i -r \
         -e "s/^#(\[multilib\]).*/\\1/" \
         -e "/^\[multilib\]/!b;n;cInclude = $inc" "$1"
@@ -171,12 +183,26 @@ enable_multilib() {
     esac
 }
 
+enable_services() {
+    local service
+
+    # Loop thru services
+    while read -r service; do
+        run_in_chroot "systemctl enable $service"
+    done < <(array ".services"); unset service
+}
+
+enable_sudo_for_wheel() {
+    sed -i -r "s/^# (%wheel ALL\=\(ALL\) ALL)/\1/g" /mnt/etc/sudoers
+}
+
 install_configure_enable_iptables() {
+    local fw
+
     # Install iptables
     run_in_chroot "pacman --needed --noconfirm -S iptables"
 
     # Create rules files
-    local fw
     for fw in iptables ip6tables; do
         array ".iptables.${fw}_rules" >/mnt/etc/iptables/${fw}.rules
         check_if_fail $?
@@ -193,12 +219,13 @@ install_configure_enable_iptables() {
 }
 
 install_configure_enable_lxdm() {
+    local key val
+
     if [[ -n $(boolean ".lxdm.enable") ]]; then
         # Install LXDM
         run_in_chroot "pacman --needed --noconfirm -S lxdm"
 
         # Update lxdm.conf
-        local key val
         while read -r key; do
             val="$(json_get ".lxdm.lxdm_conf.$key")"
             [[ -n $val ]] || continue
@@ -213,8 +240,10 @@ install_configure_enable_lxdm() {
 }
 
 install_configure_enable_networkmanager() {
+    local -a pkgs
+
     # Install NetworkManager
-    local -a pkgs=(
+    pkgs=(
         "network-manager-applet"
         "networkmanager"
         "networkmanager-openconnect"
@@ -241,11 +270,12 @@ install_configure_enable_sddm() {
 }
 
 install_configure_enable_ssh() {
+    local homedir hostname key val
+
     # Install SSH
     run_in_chroot "pacman --needed --noconfirm -S openssh"
 
     # Update sshd_config
-    local key val
     while read -r key; do
         val="$(json_get ".ssh.sshd_config.$key")"
         [[ -n $val ]] || continue
@@ -259,7 +289,6 @@ install_configure_enable_ssh() {
     fi
 
     # Configure initial ~/.ssh/authorized_keys
-    local homedir
     while read -r key; do
         case "$key" in
             "root") homedir="/mnt/root" ;;
@@ -281,7 +310,7 @@ install_configure_enable_ssh() {
     done < <(hash_keys ".ssh.authorized_keys"); unset key
 
     # Configure initial ~/.ssh/config
-    local hostname="$(var "hostname")"
+    hostname="$(var "hostname")"
     while read -r key; do
         case "$key" in
             "root") homedir="/mnt/root" ;;
@@ -306,11 +335,13 @@ install_configure_enable_ssh() {
 }
 
 install_configure_enable_grub() {
+    local -a cmd
+    local key val
+
     # Install grub
     run_in_chroot "pacman --needed --noconfirm -S grub"
 
     # Update /etc/default/grub
-    local key val
     while read -r key; do
         val="$(json_get ".grub.grub.$key")"
         [[ -n $val ]] || continue
@@ -323,9 +354,11 @@ install_configure_enable_grub() {
         "BIOS") run_in_chroot "grub-install --target=i386-pc $1" ;;
         "UEFI")
             run_in_chroot "pacman --needed --noconfirm -S efibootmgr"
-            local -a cmd=(
-                "grub-install --target=x86_64-efi"
-                "--efi-directory=/boot --bootloader-id=grub"
+            cmd=(
+                "grub-install"
+                "--efi-directory=/boot"
+                "--removable"
+                "--target=x86_64-efi"
             )
             run_in_chroot "${cmd[@]}"
             ;;
@@ -336,9 +369,10 @@ install_configure_enable_grub() {
 }
 
 install_packages() {
+    local gem null pkg ruaur
+    local -a env pkgs
+
     # Install packages with pacman
-    local pkg
-    local -a pkgs
     while read -r pkg; do
         case "$pkg" in
             "gcc")
@@ -376,16 +410,16 @@ install_packages() {
     esac
 
     # Install RuAUR ruby gem
-    local -a env=(
+    env=(
         "GEM_HOME=/root/.gem/ruby"
         "GEM_PATH=/root/.gem/ruby/gems"
     )
-    local gem="gem install --no-format-executable --no-user-install"
+    gem="gem install --no-format-executable --no-user-install"
     case "$action" in
         "install")
             run_in_chroot "pacman --needed --noconfirm -S ruby"
             run_in_chroot "mkdir -p /root/.gem/ruby/gems"
-            local null=">/dev/null 2>&1"
+            null=">/dev/null 2>&1"
             run_in_chroot "${env[*]} $gem rdoc $null || echo -n"
             run_in_chroot "${env[*]} $gem rdoc ruaur"
             ;;
@@ -425,13 +459,13 @@ install_packages() {
 
     case "$action" in
         "install")
-            local ruaur="/root/.gem/ruby/bin/ruaur --noconfirm"
+            ruaur="/root/.gem/ruby/bin/ruaur --noconfirm"
             if [[ ${#pkgs[@]} -gt 0 ]]; then
                 run_in_chroot "${env[*]} $ruaur -S ${pkgs[*]}"
             fi
             ;;
         "postinstall")
-            local ruaur="$HOME/.gem/ruby/bin/ruaur --noconfirm"
+            ruaur="$HOME/.gem/ruby/bin/ruaur --noconfirm"
             if [[ ${#pkgs[@]} -gt 0 ]]; then
                 $ruaur -S "${pkgs[@]}"
             fi
@@ -441,8 +475,9 @@ install_packages() {
 }
 
 partition_and_format_disk_bios() {
-    # Wipe all signatures
     local part
+
+    # Wipe all signatures
     while read -r part; do
         wipefs --all --force "$part"
         check_if_fail $?
@@ -450,45 +485,30 @@ partition_and_format_disk_bios() {
     unset part
 
     # Single bootable partition (ext4)
+    sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
+        o  # clear the in memory partition table
+        n  # new partition
+        p  # primary partition
+        1  # partition 1
+           # default - start at beginning of disk
+           # default - extend partition to end of disk
+        a  # make a partition bootable
+        p  # print the in-memory partition table
+        w  # write the partition table and exit
+EOF
+    check_if_fail $?
+
     case "$1" in
-        "/dev/nvme"*)
-            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
-                g  # clear the in memory partition table
-                n  # new partition
-                1  # partition 1
-                   # default - start at beginning of disk
-                   # default - extend partition to end of disk
-                p  # print the in-memory partition table
-                w  # write the partition table and exit
-EOF
-            check_if_fail $?
-
-            mkfs.ext4 "${1}p1"
-            check_if_fail $?
-            ;;
-        *)
-            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
-                o  # clear the in memory partition table
-                n  # new partition
-                p  # primary partition
-                1  # partition 1
-                   # default - start at beginning of disk
-                   # default - extend partition to end of disk
-                a  # make a partition bootable
-                p  # print the in-memory partition table
-                w  # write the partition table and exit
-EOF
-            check_if_fail $?
-
-            mkfs.ext4 "${1}1"
-            check_if_fail $?
-            ;;
+        "/dev/nvme"*) mkfs.ext4 "${1}p1" ;;
+        *) mkfs.ext4 "${1}1" ;;
     esac
+    check_if_fail $?
 }
 
 partition_and_format_disk_uefi() {
-    # Wipe all signatures
     local part
+
+    # Wipe all signatures
     while read -r part; do
         wipefs --all --force "$part"
         check_if_fail $?
@@ -496,25 +516,25 @@ partition_and_format_disk_uefi() {
     unset part
 
     # A small, bootable partition (EFI) and a larger partition (ext4)
+    sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
+        g     # clear the in memory partition table
+        n     # new partition
+        1     # partition 1
+              # default - start at beginning of disk
+        +256M # 256M UEFI partition
+        t     # change partition type
+        1     # EFI system
+        n     # new partition
+        2     # partition 2
+              # default - start after UEFI partition
+              # default - extend partition to end of disk
+        p     # print the in-memory partition table
+        w     # write the partition table and exit
+EOF
+    check_if_fail $?
+
     case "$1" in
         "/dev/nvme"*)
-            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
-                g     # clear the in memory partition table
-                n     # new partition
-                1     # partition 1
-                      # default - start at beginning of disk
-                +256M # 256M UEFI partition
-                t     # change partition type
-                1     # EFI system
-                n     # new partition
-                2     # partition 2
-                      # default - start after UEFI partition
-                      # default - extend partition to end of disk
-                p     # print the in-memory partition table
-                w     # write the partition table and exit
-EOF
-            check_if_fail $?
-
             mkfs.fat "${1}p1"
             check_if_fail $?
 
@@ -522,28 +542,7 @@ EOF
             check_if_fail $?
             ;;
         *)
-            sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
-                o     # clear the in memory partition table
-                n     # new partition
-                p     # primary partition
-                1     # partition 1
-                      # default - start at beginning of disk
-                +256M # 256M UEFI partition
-                t     # change partition type
-                ef    # EFI system
-                n     # new partition
-                p     # primary partition
-                2     # partition 2
-                      # default - start after UEFI partition
-                      # default - extend partition to end of disk
-                a     # make a partition bootable
-                1     # partition 1
-                p     # print the in-memory partition table
-                w     # write the partition table and exit
-EOF
-            check_if_fail $?
-
-            mkfs.ext4 "${1}1"
+            mkfs.fat "${1}1"
             check_if_fail $?
 
             mkfs.ext4 "${1}2"
@@ -976,6 +975,7 @@ cat >/tmp/archnemesis.json <<EOF
       "zmap"
     ]
   },
+  "services": [],
   "ssh": {
     "authorized_keys": {
       "nemesis": [],
@@ -1009,7 +1009,7 @@ cat >/tmp/archnemesis.json <<EOF
       "nemesis:nemesis"
     ],
     "groups": [
-      "nemesis:users,wireshark"
+      "nemesis:users,wheel,wireshark"
     ]
   }
 }
@@ -1053,12 +1053,15 @@ case "$action" in
         timedatectl set-ntp true
         check_if_fail $?
 
+        info "Partitioning and formatting disk"
+        case "$boot_mode" in
+            "BIOS") partition_and_format_disk_bios "$dev" ;;
+            "UEFI") partition_and_format_disk_uefi "$dev" ;;
+        esac
+
+        info "Mounting file systems"
         case "$boot_mode" in
             "BIOS")
-                info "Partitioning and formatting disk"
-                partition_and_format_disk_bios "$dev"
-
-                info "Mounting file system"
                 case "$dev" in
                     "/dev/nvme"*) mount "${dev}p1" /mnt ;;
                     *) mount "${dev}1" /mnt ;;
@@ -1066,10 +1069,6 @@ case "$action" in
                 check_if_fail $?
                 ;;
             "UEFI")
-                info "Partitioning and formatting disk"
-                partition_and_format_disk_uefi "$dev"
-
-                info "Mounting file systems"
                 case "$dev" in
                     "/dev/nvme"*)
                         mount "${dev}p2" /mnt
@@ -1117,11 +1116,6 @@ case "$action" in
         var "hostname" >/mnt/etc/hostname
         check_if_fail $?
 
-        if [[ -n $(boolean "nemesis_tools") ]]; then
-            info "Enabling multilib in pacman.conf"
-            enable_multilib /mnt/etc/pacman.conf
-        fi
-
         info "Installing and configuring GRUB"
         install_configure_enable_grub "$dev"
 
@@ -1131,13 +1125,16 @@ case "$action" in
         info "Installing/Configuring/Enabling iptables"
         install_configure_enable_iptables
 
+        info "Enabling sudo for wheel group"
+        enable_sudo_for_wheel
+
         info "Creating users"
         create_users
 
         info "Installing/Configuring/Enabling SSH"
         install_configure_enable_ssh
 
-        if [[ -n $(var "gui") ]]; then
+        if [[ -n $(boolean "gui") ]]; then
             info "Installing/Configuring/Enabling NetworkManager"
             install_configure_enable_networkmanager
 
@@ -1146,11 +1143,19 @@ case "$action" in
             install_configure_enable_sddm
         fi
 
+        if [[ -n $(boolean "nemesis_tools") ]]; then
+            info "Enabling multilib in pacman.conf"
+            enable_multilib /mnt/etc/pacman.conf
+        fi
+
         info "Installing user requested packages"
         install_packages
 
         info "Adding users to requested groups"
         add_users_to_groups
+
+        info "Enabling services"
+        enable_services
 
         info "User customizations"
         customize
