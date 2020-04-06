@@ -8,6 +8,8 @@ it. Can I call this a distro?
 Run one of the following shortcuts if you just want to use the default
 configurations.
 
+**Note:** Default credentials: `nemesis:nemesis`
+
 ### Nemesis
 
 From an Arch Installation ISO:
@@ -16,8 +18,6 @@ From an Arch Installation ISO:
 $ curl -kLs "https://nemesis.archnemesis.ninja" | bash
 ```
 
-**Note:** Default credentials: `nemesis:nemesis`
-
 ### CLI only
 
 From an Arch Installation ISO:
@@ -25,8 +25,6 @@ From an Arch Installation ISO:
 ```
 $ curl -kLs "https://cli.archnemesis.ninja" | bash
 ```
-
-**Note:** Default credentials: `nemesis:nemesis`
 
 ### Post-install
 
@@ -50,7 +48,7 @@ $ curl -kLs "https://post-install.archnemesis.ninja" | bash
 3. Generate a config file by running the script
 
     ```
-    $ ./install.sh >archnemesis.json
+    $ ./install.sh >nemesis.json
     ```
 
 4. Modify the json file as needed
@@ -93,7 +91,7 @@ $ curl -kLs "https://post-install.archnemesis.ninja" | bash
 5. Run the script using the config
 
     ```
-    $ ./install.sh --config archnemesis.json /dev/DEVICE
+    $ ./install.sh -c nemesis.json /dev/DEVICE
     ```
 
 ## Installation (post-install)

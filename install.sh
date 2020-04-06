@@ -33,13 +33,18 @@ warn() { echo -e "${color:+\e[33m}[-] $*\e[0m"; }
 
 ## Installer functions
 
+# Return an array line by line
 array() { json_get "$1[]"; }
 
+# Return true or empty string
 boolean() {
-    local var="$1"
+    local var
 
     # If it doesn't start with a "." then it should be a "var"
-    [[ -n $(echo "$1" | grep -Ps "^\.") ]] || var=".vars.$1"
+    case "$1" in
+        "."*) var="$1" ;;
+        *) var=".vars.$1" ;;
+    esac
 
     # I can only anticipate so much here
     case "$(json_get "$var")" in
@@ -81,15 +86,15 @@ hash_keys() { json_get "$1|keys[]"; }
 run_in_chroot() {
     cat >/mnt/chroot_cmd <<EOF
 #!/usr/bin/env bash
-$@
+$1
 exit \$?
 EOF
     check_if_fail $?
 
-    chmod 700 /mnt/chroot_cmd
+    chmod 777 /mnt/chroot_cmd
     check_if_fail $?
 
-    arch-chroot /mnt /chroot_cmd
+    arch-chroot ${2:+-u $2} /mnt /chroot_cmd
     check_if_fail $?
 
     rm -f /mnt/chroot_cmd
@@ -101,20 +106,168 @@ var() { json_get ".vars.$1"; }
 
 ## Configuration functions
 
-add_users_to_groups() {
-    local entry group groups username
+beginners_guide() {
+    local loadkeys tz
 
-    # Loop thru users and add to specified group
-    while read -r entry; do
-        groups="${entry#*:}"
-        username="${entry%%:*}"
+    info "Selecting keyboard layout"
+    loadkeys="$(var "loadkeys")"
+    loadkeys "$loadkeys"
+    check_if_fail $?
 
-        while read -r group; do
-            run_in_chroot "groupadd -f $group"
-        done < <(echo "$groups" | sed "s/,/\n/g"); unset group
+    info "Updating system clock"
+    timedatectl set-ntp true
+    check_if_fail $?
 
-        run_in_chroot "usermod -aG \"$groups\" $username"
-    done < <(array ".users.groups"); unset entry
+    info "Partitioning and formatting disk"
+    case "$boot_mode" in
+        "BIOS") partition_and_format_disk_bios "$dev" ;;
+        "UEFI") partition_and_format_disk_uefi "$dev" ;;
+    esac
+
+    info "Mounting file systems"
+    case "$boot_mode" in
+        "BIOS")
+            case "$dev" in
+                "/dev/nvme"*) mount "${dev}p1" /mnt ;;
+                *) mount "${dev}1" /mnt ;;
+            esac
+            check_if_fail $?
+            ;;
+        "UEFI")
+            case "$dev" in
+                "/dev/nvme"*)
+                    mount "${dev}p2" /mnt
+                    mkdir -p /mnt/boot
+                    mount "${dev}p1" /mnt/boot
+                    ;;
+                *)
+                    mount "${dev}2" /mnt
+                    mkdir -p /mnt/boot
+                    mount "${dev}1" /mnt/boot
+                    ;;
+            esac
+            check_if_fail $?
+            ;;
+    esac
+
+    info "Selecting mirrors"
+    select_mirrors
+
+    info "Installing base packages"
+    pacstrap /mnt base base-devel linux linux-firmware
+    check_if_fail $?
+
+    info "Configuring the system"
+
+    info "Generating fstab"
+    genfstab -U /mnt >>/mnt/etc/fstab
+    check_if_fail $?
+
+    info "chroot tasks"
+
+    info "Selecting the time zone"
+    tz="$(var "timezone")"
+    run_in_chroot "ln -sf /usr/share/zoneinfo/$tz /etc/localtime"
+    run_in_chroot "hwclock --systohc"
+
+    info "Selecting locale"
+    select_locale
+
+    info "Saving the keyboard layout"
+    echo "KEYMAP=$loadkeys" >/mnt/etc/vconsole.conf
+    check_if_fail $?
+
+    info "Saving hostname"
+    var "hostname" >/mnt/etc/hostname
+    check_if_fail $?
+
+    info "Configuring and enabling networking"
+    configure_enable_networking
+
+    info "Installing and configuring GRUB"
+    install_configure_enable_grub "$dev"
+}
+
+configure_archnemesis() {
+    local idx name ucfg uhome
+
+    # Install htop
+    run_in_chroot "pacman --needed --noconfirm -S htop"
+
+    if [[ -n $(boolean "gui") ]]; then
+        # Install rofi and tilix
+        run_in_chroot "pacman --needed --noconfirm -S rofi tilix"
+
+        # Setup default terminal emulator
+        run_in_chroot "ln -fs /usr/bin/tilix /usr/local/bin/term"
+
+        # Wallpapers
+        rm -rf /mnt/usr/share/lnxpcs /mnt/usr/share/lnxpcs-master
+
+        tar -C /mnt/usr/share -xzf /tmp/lnxpcs-master.tar.gz \
+            lnxpcs-master/wallpapers
+        check_if_fail $?
+
+        mv -f /mnt/usr/share/lnxpcs-master /mnt/usr/share/lnxpcs
+        check_if_fail $?
+    fi
+
+    # Loop thru users and setup configs
+    for idx in $(seq 1 $(json_get ".users|length")); do
+        ((idx -= 1)) # 0-indexed
+
+        name="$(json_get ".users[$idx].name")"
+        case "$name" in
+            "root") uhome="/mnt/root" ;;
+            *) uhome="/mnt/home/$name" ;;
+        esac
+        ucfg="$uhome/.config"
+
+        # htop
+        mkdir -p "$ucfg/htop"
+        cp -f /tmp/configs/htop/htoprc "$ucfg/htop/"
+
+        # top
+        cp -f /tmp/configs/top/toprc "$uhome/.toprc"
+
+        if [[ -n $(boolean "gui") ]]; then
+            # LXQT
+            case "$(var "session")" in
+                "lxqt")
+                    mkdir -p "$ucfg/lxqt"
+                    cp -f /tmp/configs/lxqt/*.conf "$ucfg/lxqt/"
+                    ;;
+            esac
+
+            # openbox
+            mkdir -p "$ucfg/openbox"
+            cp -f /tmp/configs/lxqt/lxqt-rc.xml "$ucfg/openbox/"
+
+            # pcmanfm-qt
+            mkdir -p "$ucfg/pcmanfm-qt/lxqt"
+            sed -r "s/^(SlideShowInterval)\=[0-9]+/\1\=0/" \
+                /tmp/configs/pcmanfm-qt/default/settings.conf \
+                >"$ucfg/pcmanfm-qt/lxqt/settings.conf"
+
+            # rofi
+            mkdir -p "$ucfg/rofi"
+            cp -f /tmp/configs/rofi/config "$ucfg/rofi/"
+            cp -f /tmp/configs/rofi/glue_pro_blue.rasi \
+                "$ucfg/rofi/theme.rasi"
+
+            # xpofile
+            cp -f /tmp/configs/lxqt/xprofile "$uhome/.xprofile"
+
+            # xscreensaver
+            cp -f /tmp/configs/x11/xscreensaver "$uhome/.xscreensaver"
+        fi
+
+        # Fix permissions
+        chmod -R go-rwx "$uhome"
+        check_if_fail $?
+        run_in_chroot "chown -R $name:$name \"${uhome#/mnt}\""
+        check_if_fail $?
+    done; unset idx
 }
 
 configure_enable_networking() {
@@ -128,34 +281,66 @@ configure_enable_networking() {
     check_if_fail $?
 
     # Enable services
-    run_in_chroot "systemctl enable systemd-networkd.service"
-    run_in_chroot "systemctl enable systemd-resolved.service"
+    run_in_chroot "systemctl enable systemd-networkd"
+    run_in_chroot "systemctl enable systemd-resolved"
 }
 
-create_users() {
-    local configs creds crypt password username
+create_and_configure_users() {
+    local crypt group groups idx name password uhome
 
     # Loop thru users and create them
-    while read -r creds; do
-        password="${creds#*:}"
-        username="${creds%%:*}"
+    for idx in $(seq 1 $(json_get ".users|length")); do
+        ((idx -= 1)) # 0-indexed
+
+        groups="$(json_get ".users[$idx].groups")"
+        name="$(json_get ".users[$idx].name")"
+        password="$(json_get ".users[$idx].password")"
+
+        # Create user
         crypt="$(perl -e "print crypt(\"$password\", \"$RANDOM\")")"
-        run_in_chroot "useradd -mp \"$crypt\" -U $username"
-    done < <(array ".users.create"); unset creds
+        case "$name" in
+            "root")
+                uhome="/mnt/root"
+                run_in_chroot "usermod -p \"$crypt\" $name"
+                ;;
+            *)
+                uhome="/mnt/home/$name"
+                run_in_chroot "useradd -mp \"$crypt\" -U $name"
+                ;;
+        esac
+
+        # Add user to groups
+        while read -r group; do
+            run_in_chroot "groupadd -f $group"
+        done < <(echo "$groups" | sed "s/,/\n/g"); unset group
+        run_in_chroot "usermod -aG \"$groups\" $name"
+
+        # Configure initial ~/.ssh
+        mkdir -p "$uhome/.ssh"
+        check_if_fail $?
+
+        # authorized_keys
+        array ".users[$idx].authorized_keys" \
+            >"$uhome/.ssh/authorized_keys"
+        check_if_fail $?
+
+        # config
+        array ".users[$idx].ssh_config" >"$uhome/.ssh/config"
+        check_if_fail $?
+
+        # SSH key
+        hostname="$(var "hostname")"
+        ssh-keygen -C $hostname -f "$uhome/.ssh/$hostname" -N "" \
+            -q -t ed25519
+        check_if_fail $?
+    done; unset idx
 }
 
 customize() {
     local ans
 
-    echo "Recommended actions include:"
-    echo "    - Create new users"
-    echo "    - Set user passwords (if authorized_keys not provided)"
-    echo "    - Change the preferred shell (maybe to zsh)"
-    echo "    - Install additional packages"
-    echo "    - Modify config files"
-
     while :; do
-        read -p "Drop into a shell? (y/N) " -r ans
+        read -p "Open shell for final customizations? (y/N) " -r ans
         case "$ans" in
             "y"|"Y"|"yes"|"Yes") arch-chroot /mnt; break ;;
             ""|"n"|"N"|"no"|"No") break ;;
@@ -196,6 +381,30 @@ enable_sudo_for_wheel() {
     sed -i -r "s/^# (%wheel ALL\=\(ALL\) ALL)/\1/g" /mnt/etc/sudoers
 }
 
+fetch_tarballs() {
+    local gitlab="https://gitlab.com/mjwhitta"
+    local tar
+
+    cd /tmp
+
+    # Configs
+    rm -rf configs-master
+    tar="configs/-/archive/master/configs-master.tar.gz"
+    curl -kLO "$gitlab/$tar"
+    check_if_fail $?
+
+    tar -xzf configs-master.tar.gz
+    check_if_fail $?
+    mv configs-master configs
+
+    # Wallpapers
+    tar="lnxpcs/-/archive/master/lnxpcs-master.tar.gz"
+    curl -kLO "$gitlab/$tar"
+    check_if_fail $?
+
+    cd
+}
+
 install_configure_enable_iptables() {
     local fw
 
@@ -214,7 +423,7 @@ install_configure_enable_iptables() {
 
     # Enable services
     if [[ -n $(boolean ".iptables.enable") ]]; then
-        run_in_chroot "systemctl enable {iptables,ip6tables}.service"
+        run_in_chroot "systemctl enable {ip6tables,iptables}"
     fi
 }
 
@@ -235,7 +444,7 @@ install_configure_enable_lxdm() {
         done < <(hash_keys ".lxdm.lxdm_conf"); unset key
 
         # Enable service
-        run_in_chroot "systemctl enable lxdm.service"
+        run_in_chroot "systemctl enable lxdm"
     fi
 }
 
@@ -252,7 +461,7 @@ install_configure_enable_networkmanager() {
     run_in_chroot "pacman --needed --noconfirm -S ${pkgs[*]}"
 
     # Enable service
-    run_in_chroot "systemctl enable NetworkManager.service"
+    run_in_chroot "systemctl enable NetworkManager"
 }
 
 install_configure_enable_sddm() {
@@ -265,12 +474,12 @@ install_configure_enable_sddm() {
         array ".sddm.sddm_conf" >/mnt/etc/sddm.conf.d/default.conf
 
         # Enable service
-        run_in_chroot "systemctl enable sddm.service"
+        run_in_chroot "systemctl enable sddm"
     fi
 }
 
 install_configure_enable_ssh() {
-    local homedir hostname key val
+    local hostname key val
 
     # Install SSH
     run_in_chroot "pacman --needed --noconfirm -S openssh"
@@ -285,53 +494,8 @@ install_configure_enable_ssh() {
 
     # Enable service
     if [[ -n $(boolean ".ssh.enable") ]]; then
-        run_in_chroot "systemctl enable sshd.service"
+        run_in_chroot "systemctl enable sshd"
     fi
-
-    # Configure initial ~/.ssh/authorized_keys
-    while read -r key; do
-        case "$key" in
-            "root") homedir="/mnt/root" ;;
-            *) homedir="/mnt/home/$key" ;;
-        esac
-
-        mkdir -p "$homedir/.ssh"
-        check_if_fail $?
-
-        array ".ssh.authorized_keys.$key" \
-            >"$homedir/.ssh/authorized_keys"
-        check_if_fail $?
-
-        chmod -R go-rwx "$homedir/.ssh"
-        check_if_fail $?
-
-        run_in_chroot "chown -R $key:$key \"${homedir#/mnt}/.ssh\""
-        check_if_fail $?
-    done < <(hash_keys ".ssh.authorized_keys"); unset key
-
-    # Configure initial ~/.ssh/config
-    hostname="$(var "hostname")"
-    while read -r key; do
-        case "$key" in
-            "root") homedir="/mnt/root" ;;
-            *) homedir="/mnt/home/$key" ;;
-        esac
-
-        mkdir -p "$homedir/.ssh"
-        check_if_fail $?
-
-        ssh-keygen -f "$homedir/.ssh/$hostname" -N "" -q -t ed25519
-        check_if_fail $?
-
-        array ".ssh.config.$key" >"$homedir/.ssh/config"
-        check_if_fail $?
-
-        chmod -R go-rwx "$homedir/.ssh"
-        check_if_fail $?
-
-        run_in_chroot "chown -R $key:$key \"${homedir#/mnt}/.ssh\""
-        check_if_fail $?
-    done < <(hash_keys ".ssh.config"); unset key
 }
 
 install_configure_enable_grub() {
@@ -360,7 +524,7 @@ install_configure_enable_grub() {
                 "--removable"
                 "--target=x86_64-efi"
             )
-            run_in_chroot "${cmd[@]}"
+            run_in_chroot "${cmd[*]}"
             ;;
     esac
 
@@ -404,7 +568,7 @@ install_packages() {
             ;;
         "postinstall")
             if [[ ${#pkgs[@]} -gt 0 ]]; then
-                sudo pacman --needed --noconfirm -S "${pkgs[@]}"
+                sudo pacman --needed --noconfirm -S "${pkgs[*]}"
             fi
             ;;
     esac
@@ -419,8 +583,8 @@ install_packages() {
         "install")
             run_in_chroot "pacman --needed --noconfirm -S ruby"
             run_in_chroot "mkdir -p /root/.gem/ruby/gems"
-            null=">/dev/null 2>&1"
-            run_in_chroot "${env[*]} $gem rdoc $null || echo -n"
+            run_in_chroot \
+                "${env[*]} $gem rdoc >/dev/null 2>&1 || echo -n"
             run_in_chroot "${env[*]} $gem rdoc ruaur"
             ;;
         "postinstall")
@@ -467,7 +631,7 @@ install_packages() {
         "postinstall")
             ruaur="$HOME/.gem/ruby/bin/ruaur --noconfirm"
             if [[ ${#pkgs[@]} -gt 0 ]]; then
-                $ruaur -S "${pkgs[@]}"
+                $ruaur -S "${pkgs[*]}"
             fi
             check_if_fail $?
             ;;
@@ -622,10 +786,19 @@ done
 
 # Check for valid params
 [[ -z $help ]] || usage 0
+
+case "$config" in
+    "/"*|"") ;;
+    *) config="$(pwd)/$config" ;;
+esac
+
 case "$action" in
     "install")
         [[ $# -le 1 ]] || usage 1
+
         [[ -n $config ]] || usage 2
+        [[ -f $config ]] || usage 3
+
         [[ $# -eq 0 ]] || dev="$1"
         if [[ -z $dev ]]; then
             declare -a devs
@@ -644,6 +817,7 @@ case "$action" in
     "postinstall")
         [[ $# -eq 0 ]] || usage 1
         [[ -n $config ]] || usage 2
+        [[ -f $config ]] || usage 3
         ;;
     "print") [[ $# -eq 0 ]] || usage 1 ;;
 esac
@@ -652,15 +826,20 @@ esac
 cat >/tmp/archnemesis.json <<EOF
 {
   "vars": {
+    "#": "Should AUR packages be installed?",
+    "aur": "true",
+    "#": "Should this be a graphical install?",
     "gui": "true",
     "hostname": "nemesis",
     "loadkeys": "us",
     "locale": "en_US",
     "mirrors": "United States",
+    "#": "Should offensive security tools be installed?",
     "nemesis_tools": "true",
     "primary_user": "nemesis",
+    "#": "Graphical session of choice (currently LXQT is supported)",
     "session": "lxqt",
-    "ssh_port": "22",
+    "sshd_port": "22",
     "timezone": "America/Indiana/Indianapolis"
   },
   "grub": {
@@ -706,8 +885,8 @@ cat >/tmp/archnemesis.json <<EOF
       "# Check for SYN flood",
       "-A TCP -j SYNFLOOD",
       "# Allow:",
-      "# - SSH ({{{ssh_port}}})",
-      "-A TCP -p tcp -m multiport --dports {{{ssh_port}}} -j ACCEPT",
+      "# - SSH ({{{sshd_port}}})",
+      "-A TCP -p tcp -m multiport --dports {{{sshd_port}}} -j ACCEPT",
       "# Allow:",
       "# - WireGuard (443)",
       "# -A UDP -p udp -m multiport --dports 443 -j ACCEPT",
@@ -767,8 +946,8 @@ cat >/tmp/archnemesis.json <<EOF
       "# Check for SYN flood",
       "-A TCP -j SYNFLOOD",
       "# Allow:",
-      "# - SSH ({{{ssh_port}}})",
-      "-A TCP -p tcp -m multiport --dports {{{ssh_port}}} -j ACCEPT",
+      "# - SSH ({{{sshd_port}}})",
+      "-A TCP -p tcp -m multiport --dports {{{sshd_port}}} -j ACCEPT",
       "# Allow:",
       "# - WireGuard (443)",
       "# -A UDP -p udp -m multiport --dports 443 -j ACCEPT",
@@ -901,10 +1080,12 @@ cat >/tmp/archnemesis.json <<EOF
       "compton",
       "flameshot",
       "gvim",
+      "leafpad",
       "lxqt",
       "mupdf",
       "noto-fonts",
       "openbox",
+      "oxygen-icons",
       "pamixer",
       "pavucontrol-qt",
       "pcmanfm-qt",
@@ -977,12 +1158,24 @@ cat >/tmp/archnemesis.json <<EOF
   },
   "services": [],
   "ssh": {
-    "authorized_keys": {
-      "nemesis": [],
-      "root": []
-    },
-    "config": {
-      "nemesis": [
+    "enable": "true",
+    "sshd_config": {
+      "PasswordAuthentication": "yes",
+      "PermitRootLogin": "without-password",
+      "Port": "{{{sshd_port}}}",
+      "PrintLastLog": "no",
+      "PrintMotd": "no",
+      "UseDNS": "no",
+      "X11Forwarding": "no"
+    }
+  },
+  "users": [
+    {
+      "authorized_keys": [],
+      "groups": "users,wheel,wireshark",
+      "name": "{{{primary_user}}}",
+      "password": "nemesis",
+      "ssh_config": [
         "# No agent or X11 forwarding",
         "Host *",
         "    ForwardAgent no",
@@ -990,28 +1183,9 @@ cat >/tmp/archnemesis.json <<EOF
         "    HashKnownHosts yes",
         "    IdentityFile ~/.ssh/{{{hostname}}}",
         "    LogLevel Error"
-      ],
-      "root": []
-    },
-    "enable": "true",
-    "sshd_config": {
-      "PasswordAuthentication": "yes",
-      "PermitRootLogin": "without-password",
-      "Port": "{{{ssh_port}}}",
-      "PrintLastLog": "no",
-      "PrintMotd": "no",
-      "UseDNS": "no",
-      "X11Forwarding": "no"
+      ]
     }
-  },
-  "users": {
-    "create": [
-      "nemesis:nemesis"
-    ],
-    "groups": [
-      "nemesis:users,wheel,wireshark"
-    ]
-  }
+  ]
 }
 EOF
 
@@ -1021,15 +1195,15 @@ case "$action" in
     *"install")
         info "Checking internet connection..."
         tmp="$(ping -c 1 8.8.8.8 | grep -s "0% packet loss")"
-        [[ -n $tmp ]] || errx 3 "No internet"
+        [[ -n $tmp ]] || errx 5 "No internet"
         info "Success"
 
         sudo pacman --noconfirm -Syy
-        sudo pacman --needed --noconfirm -S jq oniguruma
+        sudo pacman --needed --noconfirm -S jq
 
         info "Validating json config..."
-        jq -cMrS "." >/dev/null "$config"
-        check_if_fail $?
+        jq "." "$config" >/dev/null 2>&1
+        [[ $? -eq 0 ]] || errx 4 "Invalid JSON"
         info "Success"
         ;;
 esac
@@ -1039,97 +1213,18 @@ case "$action" in
         mounted="$(mount | grep -oPs "${dev}[0-9p]*")"
         [[ -z $mounted ]] || umount -R /mnt
         mounted="$(mount | grep -oPs "${dev}[0-9p]*")"
-        [[ -z $mounted ]] || errx 4 "Device already mounted"
+        [[ -z $mounted ]] || errx 6 "Device already mounted"
 
         boot_mode="BIOS"
         [[ ! -d /sys/firmware/efi/efivars ]] || boot_mode="UEFI"
 
-        info "Selecting keyboard layout"
-        loadkeys="$(var "loadkeys")"
-        loadkeys "$loadkeys"
-        check_if_fail $?
-
-        info "Updating system clock"
-        timedatectl set-ntp true
-        check_if_fail $?
-
-        info "Partitioning and formatting disk"
-        case "$boot_mode" in
-            "BIOS") partition_and_format_disk_bios "$dev" ;;
-            "UEFI") partition_and_format_disk_uefi "$dev" ;;
-        esac
-
-        info "Mounting file systems"
-        case "$boot_mode" in
-            "BIOS")
-                case "$dev" in
-                    "/dev/nvme"*) mount "${dev}p1" /mnt ;;
-                    *) mount "${dev}1" /mnt ;;
-                esac
-                check_if_fail $?
-                ;;
-            "UEFI")
-                case "$dev" in
-                    "/dev/nvme"*)
-                        mount "${dev}p2" /mnt
-                        mkdir -p /mnt/boot
-                        mount "${dev}p1" /mnt/boot
-                        ;;
-                    *)
-                        mount "${dev}2" /mnt
-                        mkdir -p /mnt/boot
-                        mount "${dev}1" /mnt/boot
-                        ;;
-                esac
-                check_if_fail $?
-                ;;
-        esac
-
-        info "Selecting mirrors"
-        select_mirrors
-
-        info "Installing base packages"
-        pacstrap /mnt base base-devel linux linux-firmware
-        check_if_fail $?
-
-        info "Configuring the system"
-
-        info "Generating fstab"
-        genfstab -U /mnt >>/mnt/etc/fstab
-        check_if_fail $?
-
-        info "chroot tasks"
-
-        info "Selecting the time zone"
-        tz="$(var "timezone")"
-        run_in_chroot "ln -sf /usr/share/zoneinfo/$tz /etc/localtime"
-        run_in_chroot "hwclock --systohc"
-
-        info "Selecting locale"
-        select_locale
-
-        info "Saving the keyboard layout"
-        echo "KEYMAP=$loadkeys" >/mnt/etc/vconsole.conf
-        check_if_fail $?
-
-        info "Saving hostname"
-        var "hostname" >/mnt/etc/hostname
-        check_if_fail $?
-
-        info "Installing and configuring GRUB"
-        install_configure_enable_grub "$dev"
-
-        info "Configuring and enabling networking"
-        configure_enable_networking
+        beginners_guide
 
         info "Installing/Configuring/Enabling iptables"
         install_configure_enable_iptables
 
         info "Enabling sudo for wheel group"
         enable_sudo_for_wheel
-
-        info "Creating users"
-        create_users
 
         info "Installing/Configuring/Enabling SSH"
         install_configure_enable_ssh
@@ -1151,11 +1246,17 @@ case "$action" in
         info "Installing user requested packages"
         install_packages
 
-        info "Adding users to requested groups"
-        add_users_to_groups
-
         info "Enabling services"
         enable_services
+
+        info "Fetching ArchNemesis deps"
+        fetch_tarballs
+
+        info "Creating and configuring users"
+        create_and_configure_users
+
+        info "Finalizing ArchNemesis"
+        configure_archnemesis
 
         info "User customizations"
         customize
