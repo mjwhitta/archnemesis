@@ -60,6 +60,25 @@ check_if_fail() {
     [[ $1 -eq 0 ]] || errx "$1" "Something went wrong"
 }
 
+# Run dconf commands as the specified user
+dconf_as() {
+    local -a env
+    local run="/run/user/\$(id -u $1)"
+
+    env+=("DBUS_SESSION_BUS_ADDRESS=unix:path=$run/bus")
+    case "$1" in
+        "root") env+=("HOME=/root") ;;
+        *) env+=("HOME=/home/$1") ;;
+    esac
+    env+=("USER=$1")
+    env+=("XDG_RUNTIME_DIR=$run")
+
+    run_in_chroot "mkdir -p $run"
+    run_in_chroot "chown -R $1:$1 $run"
+    run_in_chroot "chmod -R go-rwx $run"
+    run_in_chroot "${env[*]} dbus-launch $2" "$1"
+}
+
 # Get value from json and replace placeholders with variable values
 json_get() {
     local new
@@ -118,7 +137,6 @@ beginners_guide() {
     timedatectl set-ntp true
     check_if_fail $?
 
-    info "Partitioning and formatting disk"
     case "$boot_mode" in
         "BIOS") partition_and_format_disk_bios "$dev" ;;
         "UEFI") partition_and_format_disk_uefi "$dev" ;;
@@ -128,20 +146,32 @@ beginners_guide() {
     case "$boot_mode" in
         "BIOS")
             case "$dev" in
-                "/dev/nvme"*) mount "${dev}p1" /mnt ;;
-                *) mount "${dev}1" /mnt ;;
+                "/dev/nvme"*)
+                    subinfo "Mounting ${dev}p1 as /"
+                    mount "${dev}p1" /mnt
+                    ;;
+                *)
+                    subinfo "Mounting ${dev}1 as /"
+                    mount "${dev}1" /mnt
+                    ;;
             esac
             check_if_fail $?
             ;;
         "UEFI")
             case "$dev" in
                 "/dev/nvme"*)
+                    subinfo "Mounting ${dev}p2 as /"
                     mount "${dev}p2" /mnt
+
+                    subinfo "Mounting ${dev}p1 as /boot"
                     mkdir -p /mnt/boot
                     mount "${dev}p1" /mnt/boot
                     ;;
                 *)
+                    subinfo "Mounting ${dev}2 as /"
                     mount "${dev}2" /mnt
+
+                    subinfo "Mounting ${dev}1 as /boot"
                     mkdir -p /mnt/boot
                     mount "${dev}1" /mnt/boot
                     ;;
@@ -150,10 +180,9 @@ beginners_guide() {
             ;;
     esac
 
-    info "Selecting mirrors"
     select_mirrors
 
-    info "Installing base packages"
+    info "Installing base packages and kernel"
     pacstrap /mnt base base-devel linux linux-firmware
     check_if_fail $?
 
@@ -163,14 +192,11 @@ beginners_guide() {
     genfstab -U /mnt >>/mnt/etc/fstab
     check_if_fail $?
 
-    info "chroot tasks"
-
     info "Selecting the time zone"
     tz="$(var "timezone")"
-    run_in_chroot "ln -sf /usr/share/zoneinfo/$tz /etc/localtime"
+    run_in_chroot "ln -fs /usr/share/zoneinfo/$tz /etc/localtime"
     run_in_chroot "hwclock --systohc"
 
-    info "Selecting locale"
     select_locale
 
     info "Saving the keyboard layout"
@@ -181,27 +207,38 @@ beginners_guide() {
     var "hostname" >/mnt/etc/hostname
     check_if_fail $?
 
-    info "Configuring and enabling networking"
     configure_enable_networking
-
-    info "Installing and configuring GRUB"
     install_configure_enable_grub "$dev"
 }
 
 configure_archnemesis() {
     local idx name ucfg uhome
 
+    info "Finalizing ArchNemesis"
+
     # Install htop
+    subinfo "Installing htop"
     run_in_chroot "pacman --needed --noconfirm -S htop"
 
     if [[ -n $(boolean "gui") ]]; then
         # Install rofi and tilix
+        subinfo "Installing rofi and tilix"
         run_in_chroot "pacman --needed --noconfirm -S rofi tilix"
 
+        # Setup alfred script
+        cp -f /tmp/scripts/bin/alfred /mnt/usr/local/bin/
+        chmod 755 /mnt/usr/local/bin/alfred
+
+        # Setup snap script
+        cp -f /tmp/scripts/bin/snap /mnt/usr/local/bin/
+        chmod 755 /mnt/usr/local/bin/snap
+
         # Setup default terminal emulator
+        subinfo "Creating symlink to tilix"
         run_in_chroot "ln -fs /usr/bin/tilix /usr/local/bin/term"
 
         # Wallpapers
+        subinfo "Installing Linux wallpapers"
         rm -rf /mnt/usr/share/lnxpcs /mnt/usr/share/lnxpcs-master
 
         tar -C /mnt/usr/share -xzf /tmp/lnxpcs-master.tar.gz \
@@ -217,67 +254,230 @@ configure_archnemesis() {
         ((idx -= 1)) # 0-indexed
 
         name="$(json_get ".users[$idx].name")"
+        [[ -n $name ]] || continue
+
         case "$name" in
             "root") uhome="/mnt/root" ;;
             *) uhome="/mnt/home/$name" ;;
         esac
         ucfg="$uhome/.config"
 
+        # bash/zsh
+        cat >"$uhome/.bashrc" <<EOF
+# If not running interactively, don't do anything
+[[ \$- == *i* ]] || return
+
+# Find dirs that should be in PATH
+unset PTH
+for dir in \
+    "\$HOME/bin" \
+    "\$HOME/.local/bin" \
+    /usr/local/bin \
+    /usr/local/sbin \
+    /usr/bin \
+    /usr/sbin \
+    /bin \
+    /sbin \
+    /usr/bin/core_perl \
+    /usr/bin/vendor_perl
+do
+    [[ ! -d \$dir ]] || PTH="\${PTH:+\$PTH:}\$dir"
+done; unset dir
+
+# Find missing from PATH
+while read -r dir; do
+    [[ ! -d \$dir ]] || PTH="\${PTH:+\$PTH:}\$dir"
+done < <(echo "\${PATH//:/\\n}" | grep -Psv "\${PTH//:/|}")
+unset dir
+
+# Set PATH
+[[ -z \$PTH ]] || export PATH="\$PTH"
+unset PTH
+
+# Aliases
+alias cp="\\cp -i"
+alias f="sudo"
+alias la="ls -A"
+alias ll="ls -hl"
+alias lla="ll -A"
+alias ls="\\ls --color=auto -F"
+alias mine="sudo chown -R \\\$(id -nu):\\\$(id -gn)"
+alias mv="\\mv -i"
+alias q="exit"
+alias sume="sudo -Es"
+alias which="command -v"
+
+# Functions
+function simplehttp() {
+    case "\$1" in
+        "busybox")
+            if [[ -n \$(command -v busybox) ]]; then
+                busybox httpd -f -p "\${2:-8080}"
+            else
+                echo "busybox is not installed"
+            fi
+            ;;
+        "perl")
+            if [[ -n \$(command -v plackup) ]]; then
+                plackup -MPlack::App::Directory \
+                    -e 'Plack::App::Directory->new(root=>".");' \
+                    -p "\${2:-8080}"
+            else
+                echo "Please run: cpan Plack"
+            fi
+            ;;
+        "php")
+            if [[ -n \$(command -v php) ]]; then
+                php -S 0.0.0.0:"\${2:-8080}"
+            else
+                echo "php is not installed"
+            fi
+            ;;
+        "python2")
+            if [[ -n \$(command -v python2) ]]; then
+                python2 -m SimpleHTTPServer "\${2:-8080}"
+            else
+                echo "python2 is not installed"
+            fi
+            ;;
+        "python3")
+            if [[ -n \$(command -v python3) ]]; then
+                python3 -m http.server "\${2:-8080}"
+            else
+                echo "python3 is not installed"
+            fi
+            ;;
+        "ruby")
+            if [[ -n \$(command -v ruby) ]]; then
+                ruby -e httpd -r un -- -p "\${2:-8080}" .
+            else
+                echo "ruby is not installed"
+            fi
+            ;;
+        "twisted")
+            if [[ -n \$(command -v twistd) ]]; then
+                twistd -n web --listen tcp:"\${2:-8080}" --path .
+            else
+                echo "Please run: python3 -m pip install twisted"
+            fi
+            ;;
+        *)
+            echo "Usage: simplehttp <lang> [port]"
+            echo
+            echo "DESCRIPTION"
+            echo -n "    Start an HTTP server using the specified "
+            echo "language and port (default: 8080)."
+            echo
+            echo "OPTIONS"
+            echo "    -h, --help    Display this help message"
+            echo
+            echo "LANGUAGES"
+            [[ -z \$(command -v busybox) ]] || echo "    busybox"
+            [[ -z \$(command -v perl) ]] || echo "    perl"
+            [[ -z \$(command -v php) ]] || echo "    php"
+            [[ -z \$(command -v python2) ]] || echo "    python2"
+            [[ -z \$(command -v python3) ]] || echo "    python3"
+            [[ -z \$(command -v ruby) ]] || echo "    ruby"
+            [[ -z \$(command -v python3) ]] || echo "    twisted"
+            ;;
+    esac
+}
+
+# Prompt
+case "\$SHELL\$BASH" in
+    *"bash") export PS1="[\u@\h \W]\$ " ;;
+    *"zsh") export PS1="[%n@%m %~]%# " ;;
+esac
+EOF
+        ln -fs .bashrc "$uhome/.zshrc"
+
+        cat >"$uhome/.bash_profile" <<EOF
+# If not running interactively, don't do anything
+[[ \$- == *i* ]] || return
+
+[[ -z \$BASH ]] || [[ ! -f \$HOME/.bashrc ]] || . "\$HOME/.bashrc"
+EOF
+        ln -fs .bash_profile "$uhome/.zprofile"
+
         # htop
+        subinfo "Configuring htop for $name"
         mkdir -p "$ucfg/htop"
         cp -f /tmp/configs/htop/htoprc "$ucfg/htop/"
 
+        # snap
+        subinfo "Configuring snap for $name"
+        mkdir -p "$ucfg/snap"
+        cat >"$ucfg/snap/rc" <<EOF
+{
+  "frame": 20,
+  "offset": 30,
+  "padding": 15
+}
+EOF
+
         # top
+        subinfo "Configuring top for $name"
         cp -f /tmp/configs/top/toprc "$uhome/.toprc"
 
         if [[ -n $(boolean "gui") ]]; then
             # LXQT
             case "$(var "session")" in
                 "lxqt")
+                    subinfo "Configuring lxqt for $name"
                     mkdir -p "$ucfg/lxqt"
                     cp -f /tmp/configs/lxqt/*.conf "$ucfg/lxqt/"
                     ;;
             esac
 
             # openbox
+            subinfo "Configuring openbox for $name"
             mkdir -p "$ucfg/openbox"
             cp -f /tmp/configs/lxqt/lxqt-rc.xml "$ucfg/openbox/"
 
             # pcmanfm-qt
-            mkdir -p "$ucfg/pcmanfm-qt/lxqt"
-            sed -r "s/^(SlideShowInterval)\=[0-9]+/\1\=0/" \
-                /tmp/configs/pcmanfm-qt/default/settings.conf \
-                >"$ucfg/pcmanfm-qt/lxqt/settings.conf"
+            subinfo "Configuring pcmanfm-qt for $name"
+            mkdir -p "$ucfg"
+            cp -r /tmp/configs/pcmanfm-qt "$ucfg/"
+            ln -fs default "$ucfg/pcmanfm-qt/lxqt"
 
             # rofi
+            subinfo "Configuring rofi for $name"
             mkdir -p "$ucfg/rofi"
             cp -f /tmp/configs/rofi/config "$ucfg/rofi/"
             cp -f /tmp/configs/rofi/glue_pro_blue.rasi \
                 "$ucfg/rofi/theme.rasi"
 
+            # tilix
+            subinfo "Configuring tilix for $name"
+            run_in_chroot "chown -R $name:$name ${ucfg#/mnt}"
+            cp -f /tmp/configs/tilix/milesrc.conf /mnt/var/tmp/an.conf
+            dconf_as "$name" \
+                "dconf load /com/gexperts/Tilix/ </var/tmp/an.conf"
+            rm -f /mnt/var/tmp/an.conf
+
             # xpofile
+            subinfo "Configuring xprofile for $name"
             cp -f /tmp/configs/lxqt/xprofile "$uhome/.xprofile"
 
             # xscreensaver
+            subinfo "Configuring xscreensaver for $name"
             cp -f /tmp/configs/x11/xscreensaver "$uhome/.xscreensaver"
         fi
-
-        # Fix permissions
-        chmod -R go-rwx "$uhome"
-        check_if_fail $?
-        run_in_chroot "chown -R $name:$name \"${uhome#/mnt}\""
-        check_if_fail $?
     done; unset idx
+
+    fix_permissions
 }
 
 configure_enable_networking() {
+    info "Configuring and enabling networking"
+
     # Configure dhcp
     array ".network.dhcp_network" \
         >/mnt/etc/systemd/network/dhcp.network
     check_if_fail $?
 
     # Symlink /etc/resolv.conf
-    ln -sf ../run/systemd/resolve/resolv.conf /mnt/etc/
+    ln -fs ../run/systemd/resolve/resolv.conf /mnt/etc/
     check_if_fail $?
 
     # Enable services
@@ -288,6 +488,8 @@ configure_enable_networking() {
 create_and_configure_users() {
     local crypt group groups idx name password uhome
 
+    info "Creating and configuring users"
+
     # Loop thru users and create them
     for idx in $(seq 1 $(json_get ".users|length")); do
         ((idx -= 1)) # 0-indexed
@@ -295,27 +497,47 @@ create_and_configure_users() {
         groups="$(json_get ".users[$idx].groups")"
         name="$(json_get ".users[$idx].name")"
         password="$(json_get ".users[$idx].password")"
+        shell="$(json_get ".users[$idx].shell")"
+
+        [[ -n $name ]] || continue
 
         # Create user
         crypt="$(perl -e "print crypt(\"$password\", \"$RANDOM\")")"
         case "$name" in
             "root")
                 uhome="/mnt/root"
-                run_in_chroot "usermod -p \"$crypt\" $name"
+                if [[ -n $password ]]; then
+                    subinfo "Updating root password"
+                    run_in_chroot "usermod -p \"$crypt\" $name"
+                fi
                 ;;
             *)
                 uhome="/mnt/home/$name"
-                run_in_chroot "useradd -mp \"$crypt\" -U $name"
+                if [[ -n $password ]]; then
+                    subinfo "Creating new user: $name"
+                    run_in_chroot "useradd -mp \"$crypt\" -U $name"
+                fi
                 ;;
         esac
 
         # Add user to groups
-        while read -r group; do
-            run_in_chroot "groupadd -f $group"
-        done < <(echo "$groups" | sed "s/,/\n/g"); unset group
-        run_in_chroot "usermod -aG \"$groups\" $name"
+        if [[ -n $groups ]]; then
+            while read -r group; do
+                subinfo "Creating new group: $group"
+                run_in_chroot "groupadd -f $group"
+            done < <(echo -e "${groups//,/\\n}"); unset group
+
+            subinfo "Adding $name to groups: $groups"
+            run_in_chroot "usermod -aG \"$groups\" $name"
+        fi
+
+        # Configure shell
+        if [[ -n $shell ]]; then
+            run_in_chroot "usermod -s $shell $name"
+        fi
 
         # Configure initial ~/.ssh
+        subinfo "Configuring ssh for $name"
         mkdir -p "$uhome/.ssh"
         check_if_fail $?
 
@@ -334,10 +556,14 @@ create_and_configure_users() {
             -q -t ed25519
         check_if_fail $?
     done; unset idx
+
+    fix_permissions
 }
 
 customize() {
     local ans
+
+    info "User customizations"
 
     while :; do
         read -p "Open shell for final customizations? (y/N) " -r ans
@@ -351,6 +577,8 @@ customize() {
 enable_multilib() {
     local inc
 
+    info "Enabling multilib in pacman.conf"
+
     # Return if already uncommented
     [[ -n $(grep -Ps "#\[multilib\]" "$1") ]] || return
 
@@ -362,6 +590,7 @@ enable_multilib() {
     check_if_fail $?
 
     # Update pacman database
+    subinfo "Refreshing pacman db"
     case "$action" in
         "install") run_in_chroot "pacman -Syy" ;;
         "postinstall") sudo pacman -Syy ;;
@@ -371,13 +600,17 @@ enable_multilib() {
 enable_services() {
     local service
 
+    info "Enabling services"
+
     # Loop thru services
     while read -r service; do
+        subinfo "Enabling $service"
         run_in_chroot "systemctl enable $service"
     done < <(array ".services"); unset service
 }
 
 enable_sudo_for_wheel() {
+    info "Enabling sudo for wheel group"
     sed -i -r "s/^# (%wheel ALL\=\(ALL\) ALL)/\1/g" /mnt/etc/sudoers
 }
 
@@ -385,9 +618,12 @@ fetch_tarballs() {
     local gitlab="https://gitlab.com/mjwhitta"
     local tar
 
+    info "Fetching ArchNemesis deps"
+
     cd /tmp
 
     # Configs
+    subinfo "Fetching configs tarball"
     rm -rf configs-master
     tar="configs/-/archive/master/configs-master.tar.gz"
     curl -kLO "$gitlab/$tar"
@@ -397,7 +633,19 @@ fetch_tarballs() {
     check_if_fail $?
     mv configs-master configs
 
+    # Scripts
+    subinfo "Fetching scripts tarball"
+    rm -rf scripts-master
+    tar="scripts/-/archive/master/scripts-master.tar.gz"
+    curl -kLO "$gitlab/$tar"
+    check_if_fail $?
+
+    tar -xzf scripts-master.tar.gz
+    check_if_fail $?
+    mv scripts-master scripts
+
     # Wallpapers
+    subinfo "Fetching wallpapers tarball"
     tar="lnxpcs/-/archive/master/lnxpcs-master.tar.gz"
     curl -kLO "$gitlab/$tar"
     check_if_fail $?
@@ -405,13 +653,40 @@ fetch_tarballs() {
     cd
 }
 
+fix_permissions() {
+    local idx uhome name
+
+    info "Fixing home directory permissions"
+
+    for idx in $(seq 1 $(json_get ".users|length")); do
+        ((idx -= 1)) # 0-indexed
+
+        name="$(json_get ".users[$idx].name")"
+        [[ -n $name ]] || continue
+
+        subinfo "Fixing permissions for $name"
+
+        case "$name" in
+            "root") uhome="/mnt/root" ;;
+            *) uhome="/mnt/home/$name" ;;
+        esac
+
+        chmod -R go-rwx "$uhome"
+        check_if_fail $?
+        run_in_chroot "chown -R $name:$name \"${uhome#/mnt}\""
+        check_if_fail $?
+    done; unset idx
+}
+
 install_configure_enable_iptables() {
     local fw
 
     # Install iptables
+    info "Installing iptables"
     run_in_chroot "pacman --needed --noconfirm -S iptables"
 
     # Create rules files
+    subinfo "Configuring iptables"
     for fw in iptables ip6tables; do
         array ".iptables.${fw}_rules" >/mnt/etc/iptables/${fw}.rules
         check_if_fail $?
@@ -423,6 +698,7 @@ install_configure_enable_iptables() {
 
     # Enable services
     if [[ -n $(boolean ".iptables.enable") ]]; then
+        subinfo "Enabling iptables"
         run_in_chroot "systemctl enable {ip6tables,iptables}"
     fi
 }
@@ -432,9 +708,11 @@ install_configure_enable_lxdm() {
 
     if [[ -n $(boolean ".lxdm.enable") ]]; then
         # Install LXDM
+        info "Installing LXDM"
         run_in_chroot "pacman --needed --noconfirm -S lxdm"
 
         # Update lxdm.conf
+        subinfo "Configuring LXDM"
         while read -r key; do
             val="$(json_get ".lxdm.lxdm_conf.$key")"
             [[ -n $val ]] || continue
@@ -444,36 +722,24 @@ install_configure_enable_lxdm() {
         done < <(hash_keys ".lxdm.lxdm_conf"); unset key
 
         # Enable service
+        subinfo "Enabling LXDM"
         run_in_chroot "systemctl enable lxdm"
     fi
-}
-
-install_configure_enable_networkmanager() {
-    local -a pkgs
-
-    # Install NetworkManager
-    pkgs=(
-        "network-manager-applet"
-        "networkmanager"
-        "networkmanager-openconnect"
-        "networkmanager-openvpn"
-    )
-    run_in_chroot "pacman --needed --noconfirm -S ${pkgs[*]}"
-
-    # Enable service
-    run_in_chroot "systemctl enable NetworkManager"
 }
 
 install_configure_enable_sddm() {
     if [[ -n $(boolean ".sddm.enable") ]]; then
         # Install SDDM
+        info "Installing SDDM"
         run_in_chroot "pacman --needed --noconfirm -S sddm"
 
         # Configure SDDM
+        subinfo "Configuring SDDM"
         mkdir -p /mnt/etc/sddm.conf.d
         array ".sddm.sddm_conf" >/mnt/etc/sddm.conf.d/default.conf
 
         # Enable service
+        subinfo "Enabling SDDM"
         run_in_chroot "systemctl enable sddm"
     fi
 }
@@ -482,9 +748,11 @@ install_configure_enable_ssh() {
     local hostname key val
 
     # Install SSH
+    info "Installing openssh"
     run_in_chroot "pacman --needed --noconfirm -S openssh"
 
     # Update sshd_config
+    subinfo "Configuring sshd"
     while read -r key; do
         val="$(json_get ".ssh.sshd_config.$key")"
         [[ -n $val ]] || continue
@@ -494,6 +762,7 @@ install_configure_enable_ssh() {
 
     # Enable service
     if [[ -n $(boolean ".ssh.enable") ]]; then
+        subinfo "Enabling sshd"
         run_in_chroot "systemctl enable sshd"
     fi
 }
@@ -503,9 +772,11 @@ install_configure_enable_grub() {
     local key val
 
     # Install grub
+    info "Installing grub"
     run_in_chroot "pacman --needed --noconfirm -S grub"
 
     # Update /etc/default/grub
+    subinfo "Updating /etc/default/grub"
     while read -r key; do
         val="$(json_get ".grub.grub.$key")"
         [[ -n $val ]] || continue
@@ -515,9 +786,15 @@ install_configure_enable_grub() {
 
     # Install bootloader
     case "$boot_mode" in
-        "BIOS") run_in_chroot "grub-install --target=i386-pc $1" ;;
+        "BIOS")
+            subinfo "Installing bootloader for $boot_mode"
+            run_in_chroot "grub-install --target=i386-pc $1"
+            ;;
         "UEFI")
+            info "Installing efibootmgr"
             run_in_chroot "pacman --needed --noconfirm -S efibootmgr"
+
+            subinfo "Installing bootloader for $boot_mode"
             cmd=(
                 "grub-install"
                 "--efi-directory=/boot"
@@ -529,12 +806,33 @@ install_configure_enable_grub() {
     esac
 
     # Configure grub
+    subinfo "Generating GRUB config"
     run_in_chroot "grub-mkconfig -o /boot/grub/grub.cfg"
+}
+
+install_enable_networkmanager() {
+    local -a pkgs
+
+    # Install NetworkManager
+    info "Installing NetworkManager"
+    pkgs=(
+        "network-manager-applet"
+        "networkmanager"
+        "networkmanager-openconnect"
+        "networkmanager-openvpn"
+    )
+    run_in_chroot "pacman --needed --noconfirm -S ${pkgs[*]}"
+
+    # Enable service
+    subinfo "Enabling NetworkManager"
+    run_in_chroot "systemctl enable NetworkManager"
 }
 
 install_packages() {
     local gem null pkg ruaur
     local -a env pkgs
+
+    info "Installing user requested packages"
 
     # Install packages with pacman
     while read -r pkg; do
@@ -581,7 +879,10 @@ install_packages() {
     gem="gem install --no-format-executable --no-user-install"
     case "$action" in
         "install")
+            subinfo "Installing ruby"
             run_in_chroot "pacman --needed --noconfirm -S ruby"
+
+            subinfo "Installing RuAUR ruby gem for AUR pkgs"
             run_in_chroot "mkdir -p /root/.gem/ruby/gems"
             run_in_chroot \
                 "${env[*]} $gem rdoc >/dev/null 2>&1 || echo -n"
@@ -590,11 +891,13 @@ install_packages() {
         "postinstall")
             export GEM_HOME="$HOME/.gem/ruby"
             export GEM_PATH="$HOME/.gem/ruby/gems"
+            mkdir -p "$GEM_PATH"
 
-            mkdir -p "$HOME/.gem/ruby/gems"
+            subinfo "Installing ruby"
             sudo pacman --needed --noconfirm -S ruby
             check_if_fail $?
 
+            subinfo "Installing RuAUR ruby gem for AUR pkgs"
             $gem rdoc >/dev/null 2>&1
             $gem rdoc ruaur
             check_if_fail $?
@@ -603,6 +906,8 @@ install_packages() {
 
     # Reset
     unset pkgs
+
+    info "Installing user requested AUR packages"
 
     # Install AUR packages with RuAUR
     while read -r pkg; do
@@ -641,14 +946,18 @@ install_packages() {
 partition_and_format_disk_bios() {
     local part
 
+    info "Partitioning and formatting disk for BIOS"
+
     # Wipe all signatures
     while read -r part; do
+        subinfo "Wiping signatures for $part"
         wipefs --all --force "$part"
         check_if_fail $?
     done < <(lsblk -lp "$1" | awk '!/NAME/ {print $1}' | sort -r)
     unset part
 
     # Single bootable partition (ext4)
+    subinfo "Partitioning"
     sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
         o  # clear the in memory partition table
         n  # new partition
@@ -662,6 +971,7 @@ partition_and_format_disk_bios() {
 EOF
     check_if_fail $?
 
+    subinfo "Formatting as ext4"
     case "$1" in
         "/dev/nvme"*) mkfs.ext4 "${1}p1" ;;
         *) mkfs.ext4 "${1}1" ;;
@@ -672,14 +982,18 @@ EOF
 partition_and_format_disk_uefi() {
     local part
 
+    info "Partitioning and formatting disk for UEFI"
+
     # Wipe all signatures
     while read -r part; do
+        subinfo "Wiping signatures for $part"
         wipefs --all --force "$part"
         check_if_fail $?
     done < <(lsblk -lp "$1" | awk '!/NAME/ {print $1}' | sort -r)
     unset part
 
     # A small, bootable partition (EFI) and a larger partition (ext4)
+    subinfo "Partitioning"
     sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
         g     # clear the in memory partition table
         n     # new partition
@@ -697,6 +1011,7 @@ partition_and_format_disk_uefi() {
 EOF
     check_if_fail $?
 
+    subinfo "Formatting as fat32 and ext4"
     case "$1" in
         "/dev/nvme"*)
             mkfs.fat "${1}p1"
@@ -718,6 +1033,8 @@ EOF
 select_locale() {
     local locale="$(var "locale")"
 
+    info "Selecting $(var "locale") for locale"
+
     # Uncomment preferred locale
     sed -i -r "s/^#$locale/$locale/" /mnt/etc/locale.gen
     check_if_fail $?
@@ -730,8 +1047,9 @@ select_locale() {
 
 select_mirrors() {
     # Get preferred mirrors
+    info "Selecting mirrors for $(var "mirrors")"
     grep -A 1 "$(var "mirrors")" /etc/pacman.d/mirrorlist | \
-        grep -v "\-\-" >/etc/pacman.d/mirrorlist.keep
+        grep -v "\-\-" | sort -R >/etc/pacman.d/mirrorlist.keep
     check_if_fail $?
 
     # Replace mirrors with preferred mirrors
@@ -822,8 +1140,73 @@ case "$action" in
     "print") [[ $# -eq 0 ]] || usage 1 ;;
 esac
 
-# Default json
-cat >/tmp/archnemesis.json <<EOF
+# Main
+
+case "$action" in
+    *"install")
+        info "Checking internet connection..."
+        tmp="$(ping -c 1 8.8.8.8 | grep -s "0% packet loss")"
+        [[ -n $tmp ]] || errx 5 "No internet"
+        info "Success"
+
+        sudo pacman --noconfirm -Syy
+        sudo pacman --needed --noconfirm -S jq
+
+        info "Validating json config..."
+        jq "." "$config" >/dev/null 2>&1
+        [[ $? -eq 0 ]] || errx 4 "Invalid JSON"
+        info "Success"
+        ;;
+esac
+
+case "$action" in
+    "install")
+        mounted="$(mount | grep -oPs "${dev}[0-9p]*")"
+        [[ -z $mounted ]] || umount -R /mnt
+        mounted="$(mount | grep -oPs "${dev}[0-9p]*")"
+        [[ -z $mounted ]] || errx 6 "Device already mounted"
+
+        boot_mode="BIOS"
+        [[ ! -d /sys/firmware/efi/efivars ]] || boot_mode="UEFI"
+
+        beginners_guide
+        install_configure_enable_iptables
+        enable_sudo_for_wheel
+        install_configure_enable_ssh
+
+        if [[ -n $(boolean "gui") ]]; then
+            install_enable_networkmanager
+            install_configure_enable_lxdm
+            install_configure_enable_sddm
+        fi
+
+        if [[ -n $(boolean "nemesis_tools") ]]; then
+            enable_multilib /mnt/etc/pacman.conf
+        fi
+
+        install_packages
+        enable_services
+        fetch_tarballs
+        create_and_configure_users
+        configure_archnemesis
+        customize
+
+        info "Unmounting"
+        umount -R /mnt
+        check_if_fail $?
+
+        info "You can now reboot (remove installation media)"
+        ;;
+    "postinstall")
+        if [[ -n $(boolean "nemesis_tools") ]]; then
+            enable_multilib /etc/pacman.conf
+        fi
+
+        install_packages
+        ;;
+    "print")
+        # Default json
+        cat <<EOF
 {
   "vars": {
     "#": "Should AUR packages be installed?",
@@ -1028,7 +1411,6 @@ cat >/tmp/archnemesis.json <<EOF
       "git-crypt",
       "go",
       "gzip",
-      "htop",
       "iproute2",
       "jdk-openjdk",
       "jq",
@@ -1052,7 +1434,6 @@ cat >/tmp/archnemesis.json <<EOF
       "ranger",
       "ripgrep",
       "rsync",
-      "ruby",
       "socat",
       "tcl",
       "the_silver_searcher",
@@ -1091,8 +1472,6 @@ cat >/tmp/archnemesis.json <<EOF
       "pcmanfm-qt",
       "pulseaudio",
       "pulseaudio-bluetooth",
-      "rofi",
-      "tilix",
       "ttf-dejavu",
       "viewnior",
       "wmctrl",
@@ -1175,6 +1554,7 @@ cat >/tmp/archnemesis.json <<EOF
       "groups": "users,wheel,wireshark",
       "name": "{{{primary_user}}}",
       "password": "nemesis",
+      "shell": "/usr/bin/zsh",
       "ssh_config": [
         "# No agent or X11 forwarding",
         "Host *",
@@ -1184,97 +1564,17 @@ cat >/tmp/archnemesis.json <<EOF
         "    IdentityFile ~/.ssh/{{{hostname}}}",
         "    LogLevel Error"
       ]
+    },
+    {
+      "authorized_keys": [],
+      "groups": "",
+      "name": "root",
+      "password": "nemesis",
+      "shell": "",
+      "ssh_config": []
     }
   ]
 }
 EOF
-
-# Main
-
-case "$action" in
-    *"install")
-        info "Checking internet connection..."
-        tmp="$(ping -c 1 8.8.8.8 | grep -s "0% packet loss")"
-        [[ -n $tmp ]] || errx 5 "No internet"
-        info "Success"
-
-        sudo pacman --noconfirm -Syy
-        sudo pacman --needed --noconfirm -S jq
-
-        info "Validating json config..."
-        jq "." "$config" >/dev/null 2>&1
-        [[ $? -eq 0 ]] || errx 4 "Invalid JSON"
-        info "Success"
         ;;
-esac
-
-case "$action" in
-    "install")
-        mounted="$(mount | grep -oPs "${dev}[0-9p]*")"
-        [[ -z $mounted ]] || umount -R /mnt
-        mounted="$(mount | grep -oPs "${dev}[0-9p]*")"
-        [[ -z $mounted ]] || errx 6 "Device already mounted"
-
-        boot_mode="BIOS"
-        [[ ! -d /sys/firmware/efi/efivars ]] || boot_mode="UEFI"
-
-        beginners_guide
-
-        info "Installing/Configuring/Enabling iptables"
-        install_configure_enable_iptables
-
-        info "Enabling sudo for wheel group"
-        enable_sudo_for_wheel
-
-        info "Installing/Configuring/Enabling SSH"
-        install_configure_enable_ssh
-
-        if [[ -n $(boolean "gui") ]]; then
-            info "Installing/Configuring/Enabling NetworkManager"
-            install_configure_enable_networkmanager
-
-            info "Installing/Configuring/Enabling Desktop Manager"
-            install_configure_enable_lxdm
-            install_configure_enable_sddm
-        fi
-
-        if [[ -n $(boolean "nemesis_tools") ]]; then
-            info "Enabling multilib in pacman.conf"
-            enable_multilib /mnt/etc/pacman.conf
-        fi
-
-        info "Installing user requested packages"
-        install_packages
-
-        info "Enabling services"
-        enable_services
-
-        info "Fetching ArchNemesis deps"
-        fetch_tarballs
-
-        info "Creating and configuring users"
-        create_and_configure_users
-
-        info "Finalizing ArchNemesis"
-        configure_archnemesis
-
-        info "User customizations"
-        customize
-
-        info "Unmounting"
-        umount -R /mnt
-        check_if_fail $?
-
-        info "You can now reboot (remove installation media)"
-        ;;
-    "postinstall")
-        if [[ -n $(boolean "nemesis_tools") ]]; then
-            info "Enabling multilib in pacman.conf"
-            enable_multilib /etc/pacman.conf
-        fi
-
-        info "Installing missing packages"
-        install_packages
-        ;;
-    "print") cat /tmp/archnemesis.json ;;
 esac
