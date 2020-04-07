@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-curl -kL -o install.sh -s "https://install.archnemesis.ninja"
+curl -kLo install.sh -s "https://install.archnemesis.ninja"
 chmod 700 install.sh
 ./install.sh >/tmp/nemesis.json
 echo "Modify /tmp/nemesis.json if needed. Then run:"
