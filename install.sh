@@ -1367,7 +1367,7 @@ case "$action" in
   "network": {
     "dhcp_network": [
       "[Match]",
-      "Name=enp*",
+      "Name=en*",
       "",
       "[Network]",
       "DHCP=ipv4"
