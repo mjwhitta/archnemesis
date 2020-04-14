@@ -212,9 +212,18 @@ beginners_guide() {
 }
 
 configure_archnemesis() {
-    local idx name ucfg uhome
+    local bin gl idx name ucfg uhome
 
     info "Finalizing ArchNemesis"
+
+    # ArTTY
+    gl="https://gitlab.com"
+    bin="$(
+        curl -s "$gl/api/v4/projects/3236088/releases" | \
+        jq -cMrS ".[0].description" | grep -ioPs "uploads.+arTTY"
+    )"
+    curl -kLo /mnt/usr/local/bin/arTTY -s "$gl/mjwhitta/artty/$bin"
+    chmod 755 /mnt/usr/local/bin/arTTY
 
     # Install htop
     subinfo "Installing htop"
@@ -261,6 +270,10 @@ configure_archnemesis() {
             *) uhome="/mnt/home/$name" ;;
         esac
         ucfg="$uhome/.config"
+
+        # arTTY
+        run_in_chroot "/usr/local/bin/arTTY -u" "$name"
+        run_in_chroot "/usr/local/bin/arTTY --save linux-arch" "$name"
 
         # bash/zsh
         cat >"$uhome/.bashrc" <<EOF
@@ -388,6 +401,8 @@ case "\$SHELL\$BASH" in
     *"bash") export PS1="[\u@\h \W]\$ " ;;
     *"zsh") export PS1="[%n@%m %~]%# " ;;
 esac
+
+[[ -z \$(command -v arTTY) ]] || arTTY
 EOF
         ln -fs .bashrc "$uhome/.zshrc"
 
