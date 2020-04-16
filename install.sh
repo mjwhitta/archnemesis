@@ -238,9 +238,9 @@ configure_archnemesis() {
         cp -f /tmp/scripts/bin/alfred /mnt/usr/local/bin/
         chmod 755 /mnt/usr/local/bin/alfred
 
-        # Setup snap script
-        cp -f /tmp/scripts/bin/snap /mnt/usr/local/bin/
-        chmod 755 /mnt/usr/local/bin/snap
+        # Setup snapwin script
+        cp -f /tmp/scripts/bin/snapwin /mnt/usr/local/bin/
+        chmod 755 /mnt/usr/local/bin/snapwin
 
         # Setup default terminal emulator
         subinfo "Creating symlink to tilix"
@@ -419,10 +419,10 @@ EOF
         mkdir -p "$ucfg/htop"
         cp -f /tmp/configs/htop/htoprc "$ucfg/htop/"
 
-        # snap
-        subinfo "Configuring snap for $name"
-        mkdir -p "$ucfg/snap"
-        cat >"$ucfg/snap/rc" <<EOF
+        # snapwin
+        subinfo "Configuring snapwin for $name"
+        mkdir -p "$ucfg/snapwin"
+        cat >"$ucfg/snapwin/rc" <<EOF
 {
   "frame": 20,
   "offset": 30,
