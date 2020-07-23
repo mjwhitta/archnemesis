@@ -1,5 +1,7 @@
 # ArchNemesis
 
+<a href="https://www.buymeacoffee.com/mjwhitta">🍪 Buy me a cookie</a>
+
 I like Arch. So much so, I created my own custom PT/RT install using
 it. Can I call this a distro?
 
