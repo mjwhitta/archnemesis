@@ -6,7 +6,7 @@ check_deps() {
     for d in "${deps[@]}"; do
         if [[ -z $(command -v "$d") ]]; then
             # Force absolute path
-            if [[ ! -f "/$d" ]]; then
+            if [[ ! -e "/$d" ]]; then
                 err "$d was not found"
                 missing="true"
             fi
@@ -21,8 +21,8 @@ info() { echo -e "${color:+\e[37m}[*] $*\e[0m"; }
 long_opt() {
     local arg shift="0"
     case "$1" in
-        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || usage 127 ;;
-        *) shift="1"; shift; [[ $# -gt 0 ]] || usage 127; arg="$1" ;;
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
     esac
     echo "$arg"
     return $shift
@@ -248,9 +248,8 @@ configure_archnemesis() {
 
         # Wallpapers
         subinfo "Installing Linux wallpapers"
-        rm -rf /mnt/usr/share/lnxpcs /mnt/usr/share/lnxpcs-master
-
-        tar -C /mnt/usr/share -xzf /tmp/lnxpcs-master.tar.gz \
+        rm -fr /mnt/usr/share/lnxpcs /mnt/usr/share/lnxpcs-master
+        tar -C /mnt/usr/share -f /tmp/lnxpcs-master.tar.gz -xz \
             lnxpcs-master/wallpapers
         check_if_fail $?
 
@@ -639,7 +638,7 @@ fetch_tarballs() {
 
     # Configs
     subinfo "Fetching configs tarball"
-    rm -rf configs-master
+    rm -fr configs-master
     tar="configs/-/archive/master/configs-master.tar.gz"
     curl -kLO "$gitlab/$tar"
     check_if_fail $?
@@ -650,7 +649,7 @@ fetch_tarballs() {
 
     # Scripts
     subinfo "Fetching scripts tarball"
-    rm -rf scripts-master
+    rm -fr scripts-master
     tar="scripts/-/archive/master/scripts-master.tar.gz"
     curl -kLO "$gitlab/$tar"
     check_if_fail $?
@@ -1076,55 +1075,64 @@ usage() {
     cat <<EOF
 Usage: ${0##*/} [OPTIONS] [dev]
 
-If no config is specified, it will print out the default config. If a
-config is specified, it will install ArchNemesis with the options
-specified in the config. Setting "nemesis_tools" to "false" or empty
-means you only want to install Arch Linux (and LXQT if "gui" is true).
+DESCRIPTION
+    If no config is specified, it will print out the default config.
+    If a config is specified, it will install ArchNemesis with the
+    options specified in the config. Setting "nemesis_tools" to
+    "false" or empty means you only want to install Arch Linux (and
+    LXQT if "gui" is true).
 
-Options:
-    -c, --config=CONFIG    Use specified json config
-    -h, --help             Display this help message
-    --no-color             Disable colorized output
-    -p, --post-install     Only install missing packages
+OPTIONS
+    -c, --config=CFG      Use specified json config
+    -h, --help            Display this help message
+        --no-color        Disable colorized output
+    -p, --post-install    Only install missing packages
 
 EOF
     exit "$1"
 }
 
-declare -a args deps
+declare -a args
 unset config dev help postinstall
 action="print"
 color="true"
-deps+=("perl")
-
-# Check for missing dependencies
-check_deps
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        "--") shift && args+=("$@") && break ;;
+        "--") shift; args+=("$@"); break ;;
         "-c"|"--config"*)
-            config="$(long_opt "$@")" || shift
             [[ $action == "postinstall" ]] || action="install"
+            config="$(long_opt "$@")"
             ;;
         "-h"|"--help") help="true" ;;
         "--no-color") unset color ;;
         "-p"|"--post-install") action="postinstall" ;;
         *) args+=("$1") ;;
     esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage $? ;;
+    esac
     shift
 done
 [[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
 
-# Check for valid params
+# Help info
 [[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+deps+=("perl")
+check_deps
 
 case "$config" in
     "/"*|"") ;;
     *) config="$(pwd)/$config" ;;
 esac
 
+# Check for valid params
 case "$action" in
     "install")
         [[ $# -le 1 ]] || usage 1
