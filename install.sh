@@ -220,7 +220,8 @@ configure_archnemesis() {
     gl="https://gitlab.com"
     bin="$(
         curl -s "$gl/api/v4/projects/3236088/releases" | \
-        jq -cMrS ".[0].description" | grep -ioPs "uploads.+arTTY"
+        jq -cMrS ".[0].description" | \
+        grep -ioPs "linux.+upx.+\Kuploads.+arTTY"
     )"
     curl -kLo /mnt/usr/local/bin/arTTY -s "$gl/mjwhitta/artty/$bin"
     chmod 755 /mnt/usr/local/bin/arTTY
