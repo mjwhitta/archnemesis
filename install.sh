@@ -447,7 +447,7 @@ EOF
             # openbox
             subinfo "Configuring openbox for $name"
             mkdir -p "$ucfg/openbox"
-            cp -f /tmp/configs/lxqt/lxqt-rc.xml "$ucfg/openbox/"
+            cp -f /tmp/configs/lxqt/lxqt-rc.xml "$ucfg/openbox/rc.xml"
 
             # pcmanfm-qt
             subinfo "Configuring pcmanfm-qt for $name"
