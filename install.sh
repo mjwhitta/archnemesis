@@ -180,7 +180,9 @@ beginners_guide() {
             ;;
     esac
 
+    info "Configuring mirrors"
     select_mirrors
+    check_if_fail $?
 
     info "Installing base packages and kernel"
     pacstrap /mnt base base-devel linux linux-firmware
@@ -259,7 +261,7 @@ configure_archnemesis() {
     fi
 
     # Loop thru users and setup configs
-    for idx in $(seq 1 $(json_get ".users|length")); do
+    for idx in $(seq 1 "$(json_get ".users|length")"); do
         ((idx -= 1)) # 0-indexed
 
         name="$(json_get ".users[$idx].name")"
@@ -506,7 +508,7 @@ create_and_configure_users() {
     info "Creating and configuring users"
 
     # Loop thru users and create them
-    for idx in $(seq 1 $(json_get ".users|length")); do
+    for idx in $(seq 1 "$(json_get ".users|length")"); do
         ((idx -= 1)) # 0-indexed
 
         groups="$(json_get ".users[$idx].groups")"
@@ -567,7 +569,7 @@ create_and_configure_users() {
 
         # SSH key
         hostname="$(var "hostname")"
-        ssh-keygen -C $hostname -f "$uhome/.ssh/$hostname" -N "" \
+        ssh-keygen -C "$hostname" -f "$uhome/.ssh/$hostname" -N "" \
             -q -t ed25519
         check_if_fail $?
     done; unset idx
@@ -673,7 +675,8 @@ fix_permissions() {
 
     info "Fixing home directory permissions"
 
-    for idx in $(seq 1 $(json_get ".users|length")); do
+    # Loop thru users and fix permissions
+    for idx in $(seq 1 "$(json_get ".users|length")"); do
         ((idx -= 1)) # 0-indexed
 
         name="$(json_get ".users[$idx].name")"
@@ -844,7 +847,7 @@ install_enable_networkmanager() {
 }
 
 install_packages() {
-    local gem null pkg ruaur
+    local gem pkg ruaur
     local -a env pkgs
 
     info "Installing user requested packages"
@@ -1061,10 +1064,14 @@ select_locale() {
 }
 
 select_mirrors() {
+    local mirrors="$(var "mirrors")"
+    local url="https://archlinux.org/mirrorlist"
+
     # Get preferred mirrors
-    info "Selecting mirrors for $(var "mirrors")"
-    grep -A 1 "$(var "mirrors")" /etc/pacman.d/mirrorlist | \
-        grep -v "\-\-" | sort -R >/etc/pacman.d/mirrorlist.keep
+    subinfo "Selecting 5 closest mirrors for ${mirrors^^}"
+    curl -s "$url/?country=${mirrors^^}&protocol=https&use_mirror_status=on" | \
+        sed -e "s/^#Server/Server/" -e "/^#/d" | \
+        rankmirrors -n 5 - | tee /etc/pacman.d/mirrorlist.keep
     check_if_fail $?
 
     # Replace mirrors with preferred mirrors
@@ -1174,7 +1181,7 @@ case "$action" in
         info "Success"
 
         sudo pacman --noconfirm -Syy
-        sudo pacman --needed --noconfirm -S jq
+        sudo pacman --needed --noconfirm -S jq pacman-contrib
 
         info "Validating json config..."
         jq "." "$config" >/dev/null 2>&1
@@ -1240,7 +1247,7 @@ case "$action" in
     "hostname": "nemesis",
     "loadkeys": "us",
     "locale": "en_US",
-    "mirrors": "United States",
+    "mirrors": "us",
     "#": "Should offensive security tools be installed?",
     "nemesis_tools": "true",
     "primary_user": "nemesis",
