@@ -1421,6 +1421,9 @@ case "$action" in
         "dirbuster",
         "httprint",
         "isic",
+        "openvas-cli",
+        "openvas-scanner",
+        "pyrit",
         "rockyou",
         "vncrack"
       ]
@@ -1555,11 +1558,8 @@ case "$action" in
       "net-snmp",
       "nikto",
       "nmap",
-      "openvas",
       "ophcrack",
-      "pyrit",
       "python2",
-      "python2-pip",
       "radare2",
       "sqlmap",
       "tcpdump",
