@@ -1493,7 +1493,7 @@ case "$action" in
       "compton",
       "flameshot",
       "gvim",
-      "keepassxc,
+      "keepassxc",
       "leafpad",
       "lxqt",
       "mupdf",
