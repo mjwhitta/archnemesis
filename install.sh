@@ -57,7 +57,7 @@ boolean() {
 
 # Exit if bad return status
 check_if_fail() {
-    [[ $1 -eq 0 ]] || errx "$1" "Something went wrong"
+    [[ $1 -eq 0 ]] || errx "$1" "Something went wrong${2:+: $2}"
 }
 
 # Run dconf commands as the specified user
@@ -114,7 +114,7 @@ EOF
     check_if_fail $?
 
     arch-chroot ${2:+-u $2} /mnt /chroot_cmd
-    check_if_fail $?
+    check_if_fail $? "$1"
 
     rm -f /mnt/chroot_cmd
     check_if_fail $?
@@ -847,8 +847,8 @@ install_enable_networkmanager() {
 }
 
 install_packages() {
-    local gem pkg ruaur
-    local -a env pkgs
+    local pkg
+    local -a pkgs
 
     info "Installing user requested packages"
 
@@ -889,41 +889,36 @@ install_packages() {
             ;;
     esac
 
-    # Install RuAUR ruby gem
-    env=(
-        "GEM_HOME=/root/.gem/ruby"
-        "GEM_PATH=/root/.gem/ruby/gems"
-    )
-    gem="gem install --no-format-executable --no-user-install"
+    info "Installing yay-bin from AUR"
+
+    # Install yay-bin
     case "$action" in
         "install")
-            subinfo "Installing ruby"
-            run_in_chroot "pacman --needed --noconfirm -S ruby"
-
-            subinfo "Installing RuAUR ruby gem for AUR pkgs"
-            run_in_chroot "mkdir -p /root/.gem/ruby/gems"
             run_in_chroot \
-                "${env[*]} $gem rdoc >/dev/null 2>&1 || echo -n"
-            run_in_chroot "${env[*]} $gem rdoc ruaur"
+                "cd /tmp && \
+                sudo -u nobody git clone https://aur.archlinux.org/yay-bin.git && \
+                cd ./yay-bin && \
+                sudo -u nobody makepkg -c --needed -r -s && \
+                pacman --noconfirm -U ./*.zst"
+            run_in_chroot "yay --editmenu --nodiffmenu --save"
             ;;
         "postinstall")
-            export GEM_HOME="$HOME/.gem/ruby"
-            export GEM_PATH="$HOME/.gem/ruby/gems"
-            mkdir -p "$GEM_PATH"
-
-            subinfo "Installing ruby"
-            sudo pacman --needed --noconfirm -S ruby
-            check_if_fail $?
-
-            subinfo "Installing RuAUR ruby gem for AUR pkgs"
-            $gem rdoc >/dev/null 2>&1
-            $gem rdoc ruaur
-            check_if_fail $?
+            pushd /tmp
+            git clone https://aur.archlinux.org/yay-bin.git
+            popd
+            sudo chown -R nobody:nobody /tmp/yay-bin
+            pushd /tmp/yay-bin
+            sudo -u nobody makepkg -c --needed -r -s
+            popd
+            sudo pacman -U /tmp/yay-bin/*.zst
+            yay --editmenu --nodiffmenu --save
             ;;
     esac
+}
 
-    # Reset
-    unset pkgs
+install_packages_aur() {
+    local pkg
+    local -a pkgs
 
     info "Installing user requested AUR packages"
 
@@ -1419,6 +1414,7 @@ case "$action" in
         "amap-bin",
         "dirb",
         "dirbuster",
+        "dirstalk",
         "httprint",
         "isic",
         "openvas-cli",
