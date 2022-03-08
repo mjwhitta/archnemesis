@@ -628,7 +628,8 @@ enable_services() {
 
 enable_sudo_for_wheel() {
     info "Enabling sudo for wheel group"
-    sed -i -r "s/^# (%wheel ALL\=\(ALL\) ALL)/\1/g" /mnt/etc/sudoers
+    sed -i -r "s/^# *(%wheel ALL\=\(ALL(:ALL)?\) ALL)/\1/g" \
+        /mnt/etc/sudoers
 }
 
 fetch_tarballs() {
@@ -1598,7 +1599,7 @@ case "$action" in
       "authorized_keys": [],
       "groups": "",
       "name": "root",
-      "password": "nemesis",
+      "password": "",
       "shell": "",
       "ssh_config": []
     }
