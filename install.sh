@@ -214,18 +214,23 @@ beginners_guide() {
 }
 
 configure_archnemesis() {
-    local bin gl idx name ucfg uhome
+    local assets bin git idx name repo ucfg uhome
 
     info "Finalizing ArchNemesis"
 
     # ArTTY
-    gl="https://gitlab.com"
-    bin="$(
-        curl -s "$gl/api/v4/projects/3236088/releases" | \
-        jq -cMrS ".[0].description" | \
-        grep -ioPs "linux.+upx.+\Kuploads.+arTTY"
+    git="https://github.com"
+    repo="mjwhitta/artty/releases"
+    assets="$(
+        curl -kLs "$git/$repo" 2>/dev/null | \
+        grep -im 1 -oPs "expanded_assets/[^\"]+"
     )"
-    curl -kLo /mnt/usr/local/bin/arTTY -s "$gl/mjwhitta/artty/$bin"
+    bin="$(
+        curl -kLs "$git/$repo/$assets" 2>/dev/null | \
+        grep -im 1 -oPs "href\=.\K.+linux.+upx\.arTTY"
+    )"
+
+    curl -kLo /mnt/usr/local/bin/arTTY -s "$git$bin"
     chmod 755 /mnt/usr/local/bin/arTTY
 
     # Install htop
@@ -251,12 +256,12 @@ configure_archnemesis() {
 
         # Wallpapers
         subinfo "Installing Linux wallpapers"
-        rm -fr /mnt/usr/share/lnxpcs /mnt/usr/share/lnxpcs-master
-        tar -C /mnt/usr/share -f /tmp/lnxpcs-master.tar.gz -xz \
-            lnxpcs-master/wallpapers
+        rm -fr /mnt/usr/share/lnxpcs /mnt/usr/share/lnxpcs-main
+        unzip -d /mnt/usr/share /tmp/lnxpcs.zip \
+            "lnxpcs-main/wallpapers/*"
         check_if_fail $?
 
-        mv -f /mnt/usr/share/lnxpcs-master /mnt/usr/share/lnxpcs
+        mv -f /mnt/usr/share/lnxpcs-main /mnt/usr/share/lnxpcs
         check_if_fail $?
     fi
 
@@ -632,40 +637,40 @@ enable_sudo_for_wheel() {
         /mnt/etc/sudoers
 }
 
-fetch_tarballs() {
-    local gitlab="https://gitlab.com/mjwhitta"
-    local tar
+fetch_zips() {
+    local git="https://github.com/mjwhitta"
+    local zip
 
     info "Fetching ArchNemesis deps"
 
     cd /tmp
 
     # Configs
-    subinfo "Fetching configs tarball"
-    rm -fr configs-master
-    tar="configs/-/archive/master/configs-master.tar.gz"
-    curl -kLO "$gitlab/$tar"
+    subinfo "Fetching configs zip"
+    rm -fr configs configs-main
+    zip="configs/archive/refs/head/main.zip"
+    curl -kLo configs.zip "$git/$zip"
     check_if_fail $?
 
-    tar -xzf configs-master.tar.gz
+    unzip configs.zip
     check_if_fail $?
-    mv configs-master configs
+    mv configs-main configs
 
     # Scripts
-    subinfo "Fetching scripts tarball"
-    rm -fr scripts-master
-    tar="scripts/-/archive/master/scripts-master.tar.gz"
-    curl -kLO "$gitlab/$tar"
+    subinfo "Fetching scripts zip"
+    rm -fr scripts scripts-main
+    zip="scripts/archive/refs/head/main.zip"
+    curl -kLo scripts.zip "$git/$zip"
     check_if_fail $?
 
-    tar -xzf scripts-master.tar.gz
+    unzip scripts.zip
     check_if_fail $?
     mv scripts-master scripts
 
     # Wallpapers
-    subinfo "Fetching wallpapers tarball"
-    tar="lnxpcs/-/archive/master/lnxpcs-master.tar.gz"
-    curl -kLO "$gitlab/$tar"
+    subinfo "Fetching wallpapers zip"
+    zip="lnxpcs/archive/refs/head/main.zip"
+    curl -kLo lnxpcs.zip "$git/$zip"
     check_if_fail $?
 
     cd
@@ -1213,7 +1218,7 @@ case "$action" in
 
         install_packages
         enable_services
-        fetch_tarballs
+        fetch_zips
         create_and_configure_users
         configure_archnemesis
         customize
