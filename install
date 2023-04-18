@@ -948,7 +948,7 @@ check_deps
 # Check for valid params
 [[ $# -le 1 ]] || usage 1
 
-# Only run on Arch Linux
+# Only run on Arch Linux ISO
 case "$(grep -oPs "^ID\=\K.+" /etc/os-release)$(cat /etc/hostname)" in
     "archarchiso") ;;
     *) errx 2 "This isn't an Arch Linux ISO" ;;

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Only run on Arch Linux ISO
+case "$(grep -oPs "^ID\=\K.+" /etc/os-release)$(cat /etc/hostname)" in
+    "archarchiso") ;;
+    *) echo "This isn't an Arch Linux ISO"; exit 1 ;;
+esac
+
 # Update
 pacman -Sy || exit 1
 
