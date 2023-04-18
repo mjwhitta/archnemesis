@@ -1,0 +1,410 @@
+#!/usr/bin/env bash
+# A wrapper script for many unix package managers.
+# by Miles Whittaker <mjwhitta@gmail.com>
+#
+# --------------------------------------------------------------------
+# The MIT License (MIT)
+#
+# Copyright (c) 2018 Miles Whittaker
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# --------------------------------------------------------------------
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return $shift
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+# shellcheck disable=SC2086
+gimme_apk() {
+    if [[ -n $(command -v apk) ]]; then
+        case "$action" in
+            "install") vrun $sudo apk add "$@" ;;
+            "remove")
+                [[ -n $nosave ]] || vrun $sudo apk del -r "$@"
+                [[ -z $nosave ]] || vrun $sudo apk del --purge -r "$@"
+                ;;
+            "search") vrun apk search "$@" ;;
+            "update")
+                vrun $sudo apk update
+                vrun $sudo apk upgrade -a -U
+                ;;
+        esac
+    fi
+}
+
+# shellcheck disable=SC2086
+gimme_apt() {
+    if [[ -n $(command -v apt) ]]; then
+        case "$action" in
+            "install") vrun $sudo apt install -q "$@" ;;
+            "remove")
+                if [[ -z $nosave ]]; then
+                    vrun $sudo apt remove "$@"
+                elif [[ -n $nosave ]]; then
+                    vrun $sudo apt purge "$@"
+                    vrun $sudo apt autoremove
+                fi
+                ;;
+            "search") vrun apt-cache search "$@" ;;
+            "update")
+                vrun export DEBIAN_FRONTEND="noninteractive"
+                for cmd in \
+                    update \
+                    upgrade \
+                    dist-upgrade \
+                    autoremove \
+                    autoclean
+                do
+                    vrun $sudo apt $cmd -qy
+                done
+                ;;
+        esac
+    elif [[ -n $(command -v apt-get) ]]; then
+        case "$action" in
+            "install") vrun $sudo apt-get install -q "$@" ;;
+            "remove")
+                if [[ -z $nosave ]]; then
+                    vrun $sudo apt-get remove "$@"
+                elif [[ -n $nosave ]]; then
+                    vrun $sudo apt-get purge "$@"
+                    vrun $sudo apt-get autoremove
+                fi
+                ;;
+            "search") vrun apt-cache search "$@" ;;
+            "update")
+                vrun export DEBIAN_FRONTEND="noninteractive"
+                for cmd in \
+                    update \
+                    upgrade \
+                    dist-upgrade \
+                    autoremove \
+                    autoclean
+                do
+                    vrun $sudo apt-get $cmd -qy
+                done
+                ;;
+        esac
+    fi
+}
+
+gimme_brew() {
+    if [[ -n $(command -v brew) ]]; then
+        case "$action" in
+            "install") vrun brew install "$@" ;;
+            "remove")
+                vrun brew remove "$@"
+                [[ -z $nosave ]] || vrun brew autoremove
+                ;;
+            "search") vrun brew search "$@" ;;
+            "update")
+                # shellcheck disable=SC2046
+                vrun brew update && \
+                    vrun brew upgrade && \
+                    vrun brew upgrade --cask $(brew list --cask)
+                vrun brew autoremove
+                vrun brew cleanup
+                ;;
+        esac
+    fi
+}
+
+# shellcheck disable=SC2086
+gimme_crew() {
+    if [[ -n $(command -v crew) ]]; then
+        case "$action" in
+            "install") vrun crew install "$@" ;;
+            "remove") vrun crew remove "$@" ;;
+            "search") vrun crew search "$@" ;;
+            "update") vrun crew update && yes | vrun crew upgrade ;;
+        esac
+    fi
+}
+
+# shellcheck disable=SC2086
+gimme_dnf() {
+    if [[ -n $(command -v atomic) ]]; then
+        case "$action" in
+            "install") vrun $sudo atomic host install "$@" ;;
+            "remove") vrun $sudo atomic host uninstall "$@" ;;
+            "search") echo "Not supported" ;;
+            "update") vrun $sudo atomic host upgrade ;;
+        esac
+    elif [[ -n $(command -v dnf) ]]; then
+        case "$action" in
+            "install") vrun $sudo dnf install "$@" ;;
+            "remove") vrun $sudo dnf remove "$@" ;;
+            "search") vrun dnf search -q "$@" ;;
+            "update") vrun $sudo dnf upgrade -y ;;
+        esac
+    elif [[ -n $(command -v yum) ]]; then
+        case "$action" in
+            "install") vrun $sudo yum install "$@" ;;
+            "remove") vrun $sudo yum remove "$@" ;;
+            "search") vrun yum search "$@" ;;
+            "update") vrun $sudo yum update -y ;;
+        esac
+    fi
+}
+
+# shellcheck disable=SC2086
+gimme_pacman() {
+    if [[ -n $(command -v yay) ]]; then
+        case "$action" in
+            "install") vrun yay -S "$@" ;;
+            "remove")
+                [[ -n $nosave ]] || vrun yay -Rs "$@"
+                [[ -z $nosave ]] || vrun yay -Rns "$@"
+                ;;
+            "search") vrun yay -Ss "$@" ;;
+            "update")
+                vrun yay -Syyu --noconfirm
+                vrun yay -Sc --noconfirm
+                ;;
+        esac
+    elif [[ -n $(command -v ruaur) ]]; then
+        case "$action" in
+            "install") vrun ruaur -S "$@" ;;
+            "remove")
+                [[ -n $nosave ]] || vrun ruaur -R "$@"
+                [[ -z $nosave ]] || vrun ruaur -Rn "$@"
+                ;;
+            "search") vrun ruaur -Ss "$@" ;;
+            "update")
+                vrun ruaur -Su --noconfirm
+                vrun ruaur -Sc --noconfirm
+                ;;
+        esac
+    elif [[ -n $(command -v pacman) ]]; then
+        case "$action" in
+            "install") vrun $sudo pacman -S "$@" ;;
+            "remove")
+                [[ -n $nosave ]] || vrun $sudo pacman -Rs "$@"
+                [[ -z $nosave ]] || vrun $sudo pacman -Rns "$@"
+                ;;
+            "search") vrun pacman -Ss "$@" ;;
+            "update")
+                vrun $sudo pacman -Syyu --noconfirm
+                vrun $sudo pacman -Sc --noconfirm
+                ;;
+        esac
+    fi
+
+    if [[ -n $(pacman -Qdqt 2>/dev/null) ]]; then
+        echo
+        warn "Orphans:"
+        vrun pacman -Qdqt
+    fi
+}
+
+# shellcheck disable=SC2086
+gimme_zypper() {
+    local type="$1" && shift
+    if [[ -n $(command -v transactional-update) ]]; then
+        case "$action" in
+            "install")
+                vrun $sudo transactional-update pkg in \
+                    --no-recommends "$@"
+                ;;
+            "remove")
+                vrun $sudo transactional-update pkg rm -u "$@"
+                ;;
+            "search") vrun zypper search "$@" ;;
+            "update")
+                case "$type" in
+                    "leap") vrun $sudo transactional-update up ;;
+                    "tw") vrun $sudo transactional-update dup ;;
+                esac
+                ;;
+        esac
+    elif [[ -n $(command -v zypper) ]]; then
+        case "$action" in
+            "install")
+                vrun $sudo zypper install --no-recommends "$@"
+                ;;
+            "remove") vrun $sudo zypper remove --clean-deps "$@" ;;
+            "search") vrun zypper search "$@" ;;
+            "update")
+                vrun $sudo zypper update -y
+                vrun $sudo zypper dist-upgrade -y
+                ;;
+        esac
+    fi
+}
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS] [pkg]...
+
+DESCRIPTION
+    Automatically uses the correct package manager. Default behavior
+    is to install. If the only pkg provided is "gimme", the script
+    will update itself with the newest version from GitHub.
+
+OPTIONS
+    -h, --help        Display this help message
+    -i, --install     Install package(s) (default)
+        --no-color    Disable colorized output
+    -n, --nosave      Also remove configs
+    -R, --remove      Remove package(s)
+    -s, --search      Search for matching packages
+    -u, --update      Update installed packages
+    -v, --verbose     Show commands as they are run
+    -V, --version     Show gimme version
+
+EOF
+    exit "$1"
+}
+
+vrun() { [[ -z $verbose ]] || info "$@"; "$@"; }
+
+declare -a args
+unset help nosave verbose
+action="install"
+color="true"
+version="v1.7.0"
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-h"|"--help") help="true" ;;
+        "-i"|"--install") action="install" ;;
+        "--no-color") unset color ;;
+        "-n"|"--nosave") nosave="true" ;;
+        "-R"|"--remove") action="remove" ;;
+        "-Rn") action="remove"; nosave="true" ;;
+        "-s"|"--search") action="search" ;;
+        "-u"|"--update") action="update" ;;
+        "-v"|"--verbose") verbose="true" ;;
+        "-V"|"--version") action="version" ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage $? ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for valid OS
+case "$(uname -s)" in
+    "Darwin") os="macOS" ;;
+    "Linux")
+        # grep -P is best, but alas, some OS do not have that option
+        # (alpine/busybox)
+        os="$(
+            grep -Eos "^ID=\"?[^\"]+" /etc/os-release | \
+            awk -F "=" '{print $2}' | tr -d "\""
+        )"
+        ;;
+    *) errx 1 "Unsupported OS!" ;;
+esac
+
+# Check for missing dependencies
+declare -a deps
+# deps+=("todo")
+check_deps
+
+# Check for valid params
+case "$action" in
+    "install") [[ $# -ne 0 ]] || usage 2 ;;
+    "remove") [[ $# -ne 0 ]] || usage 2 ;;
+    "search") [[ $# -ne 0 ]] || usage 2 ;;
+    "update") [[ $# -eq 0 ]] || usage 2 ;;
+    "version") [[ $# -eq 0 ]] || usage 2 ;;
+esac
+
+# If --version, short-circuit
+case "$action" in
+    "version") echo "gimme $version ($os)"; exit 0 ;;
+esac
+
+# Check for self-update
+if [[ $# -eq 1 ]]; then
+    case "$1" in
+        "gimme")
+            # Check for missing dependencies
+            deps=("curl")
+            check_deps
+
+            repo="https://raw.githubusercontent.com/mjwhitta/milesrc"
+            gimme="/main/shell/scripts/gimme"
+
+            curl -kLo /tmp/gimme -s "$repo/$gimme" || \
+                errx 3 "Failed to get new gimme"
+
+            cat /tmp/gimme >"$0"
+            rm -f /tmp/gimme
+            exit 0
+            ;;
+    esac
+fi
+
+# Find sudo, if needed
+case "$(id -u)" in
+    "0") ;;
+    *) sudo="$(command -v sudo)" ;;
+esac
+
+# Call appropriate package manager
+case "$os" in
+    "alpine") gimme_apk "$@" ;;
+    "arch"|"archarm") gimme_pacman "$@" ;;
+    "chrom"*"os") gimme_crew "$@" ;;
+    "debian"|"pop"|"raspbian"|"ubuntu") gimme_apt "$@" ;;
+    "centos"|"fedora") gimme_dnf "$@" ;;
+    "macOS") gimme_brew "$@" ;;
+    "opensuse"*"leap") gimme_zypper "leap" "$@" ;;
+    "opensuse"*"tumbleweed") gimme_zypper "tw" "$@" ;;
+    *) errx 4 "Unsupported package manager!" ;;
+esac

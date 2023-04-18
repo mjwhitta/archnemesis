@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# A script for summarizing nmap results.
+# by Miles Whittaker <mj@whitta.dev>
+#
+# --------------------------------------------------------------------
+# The MIT License (MIT)
+#
+# Copyright (c) 2020 Miles Whittaker
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# --------------------------------------------------------------------
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS] [host1]... [hostN]
+
+DESCRIPTION
+    Searches for *.nmap files and greps for open ports.
+
+OPTIONS
+    -h, --help    Display this help message
+    --no-color    Disable colorized output
+
+EOF
+    exit "$1"
+}
+
+declare -a args hosts
+unset help
+color="true"
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-h"|"--help") help="true" ;;
+        "--no-color") unset color ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+deps+=("find")
+deps+=("grep")
+deps+=("sed")
+deps+=("sort")
+check_deps
+
+# Check for valid params
+# [[ $# -eq 0 ]] || usage 1
+
+# Read hosts from cli
+for i in "$@"; do
+    hosts+=("$i")
+done; unset i
+
+# Default, if not hosts provided
+if [[ ${#hosts[@]} -eq 0 ]]; then
+    hosts+=(".")
+fi
+
+# Hosts with open ports
+unset found oldhost
+while read -r line; do
+    match="${line#*:}"
+    newhost="${line%%:*}"
+    found="true"
+
+    if [[ "$newhost" != "$oldhost" ]]; then
+        [[ -z $oldhost ]] || echo
+        info "${newhost/.\//}"
+    fi
+    good "$match"
+
+    oldhost="$newhost"
+done < <(
+    LC_ALL="C" find "${hosts[@]}" -type f -name "*.nmap" -exec \
+    grep -HiPs "\d+/.+\sopen" {} + 2>/dev/null | \
+    sed -r "s/(tcp|udp)\.nmap/\1/g" | sort -k 1,1 -k 2,2n -t ":"
+)
+
+[[ -z $found ]] || echo
+
+# Host with no open ports
+unset found oldhost
+while read -r line; do
+    newhost="${line%%:*}"
+    found="true"
+
+    if [[ "$newhost" != "$oldhost" ]]; then
+        [[ -z $oldhost ]] || echo
+        info "${newhost/.\//}"
+        warn "No open ports"
+        echo
+    fi
+
+    oldhost="$newhost"
+done < <(
+    LC_ALL="C" find "${hosts[@]}" -type f -name "*.nmap" -exec \
+    grep -HiLPs "\d+/.+\sopen" {} + 2>/dev/null | \
+    sed -r "s/\.nmap$//g" | sort -k 1,1 -k 2,2n -t ":"
+)
+
+[[ -z $found ]] || echo -en "\e[1A\e[K"

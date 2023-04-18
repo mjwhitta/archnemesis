@@ -1,0 +1,47 @@
+! Dracula
+*background:              #282a36
+*foreground:              #f8f8f2
+*fading:                  40
+*fadeColor:               #282a36
+*cursorColor:             #f8f8f2
+*pointerColorBackground:  #6272a4
+*pointerColorForeground:  #f8f8f2
+*color0:                  #21222c
+*color1:                  #ff5555
+*color2:                  #50fa7b
+*color3:                  #f1fa8c
+*color4:                  #bd93f9
+*color5:                  #ff79c6
+*color6:                  #8be9fd
+*color7:                  #f8f8f2
+*color8:                  #6272a4
+*color9:                  #ff6e6e
+*color10:                 #69ff94
+*color11:                 #ffffa5
+*color12:                 #d6acff
+*color13:                 #ff92df
+*color14:                 #a4ffff
+*color15:                 #ffffff
+
+! Font and locale
+*utf8: 1
+*locale: true
+*utf8Title: true
+*renderFont: true
+*preeditType: Root
+*xftAntialias: true
+*faceName: DejaVuSansMono Nerd Font Mono:pixelsize=15
+*faceNameDoublesize: DejaVuSansMono Nerd Font Mono:pixelsize=18
+
+! Look and feel
+*inputMethod:ibus
+*termName: tmux-256color
+*geometry: 96x32
+*scrollBar: false
+*loginshell: true
+*cursorBlink: true
+*savelines: 16384
+*charClass: 35-38:48,44-57:48,63-90:48,95:48,97-122:48,126:48
+
+! Fix alt
+*metaSendsEscape: true

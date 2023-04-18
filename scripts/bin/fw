@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# A script for making some iptables commands easier.
+# by Miles Whittaker <mj@whitta.dev>
+#
+# --------------------------------------------------------------------
+# The MIT License (MIT)
+#
+# Copyright (c) 2020 Miles Whittaker
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# --------------------------------------------------------------------
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+fw_clear() {
+    # Save Docker rules
+    sudo "${iptables}-save" | grep -iPs "^\*|^commit$|$dreg" \
+        >/tmp/fw.docker.rules
+
+    for tbl in "${tbls[@]}"; do
+        while read -r chain; do
+            sudo "$iptables" -t "$tbl" -P "$chain" ACCEPT
+        done < <(
+            sudo "$iptables" -S -t "$tbl" | awk '/-P/ {print $2}'
+        ); unset chain
+        sudo "$iptables" -t "$tbl" -F
+        while read -r chain; do
+            sudo "$iptables" -t "$tbl" -X "$chain"
+        done < <(
+            sudo "$iptables" -S -t "$tbl" | awk '/-N/ {print $2}'
+        ); unset chain
+    done; unset tbl
+
+    # Restore Docker rules
+    sudo cat /tmp/fw.docker.rules | sudo "${iptables}-restore"
+    sudo rm -f /tmp/fw.docker.rules
+}
+
+fw_close() {
+    sudo "$iptables" -D INPUT -p tcp --dport "$1" -j ACCEPT
+    sudo "$iptables" -D INPUT -p udp --dport "$1" -j ACCEPT
+}
+
+fw_list() {
+    for tbl in "${tbls[@]}"; do
+        info "$tbl"
+        if [[ $# -eq 0 ]]; then
+            sudo "$iptables" -S -t "$tbl" | grep -iPsv "$dreg"
+        else
+            sudo "$iptables" -S -t "$tbl"
+        fi
+    done; unset tbl
+}
+
+fw_open() {
+    sudo "$iptables" -I INPUT -p tcp --dport "$1" -j ACCEPT
+    sudo "$iptables" -I INPUT -p udp --dport "$1" -j ACCEPT
+}
+
+fw_reset() {
+    if [[ -f "/etc/iptables/$iptables.rules" ]]; then
+        fw_clear
+        sudo cat "/etc/iptables/$iptables.rules" | \
+            sudo "${iptables}-restore" -n
+    fi
+}
+
+join_with() { local IFS="$1"; echo "${*:2}"; }
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS]
+
+DESCRIPTION
+    Makes some $iptables commands easier.
+
+OPTIONS
+    -a, --all           Include Docker rules in output
+    -h, --help          Display this help message
+    -c, --close=PORT    Close a previously opened port
+    --clear             Clear $iptables rules
+    -l, --list          List $iptables rules (default behavior)
+    --no-color          Disable colorized output
+    -o, --open=PORT     Open a port
+    -r, --reset         Restore default $iptables rules
+
+EOF
+    exit "$1"
+}
+
+declare -a args tbls
+unset all help iptables port
+action="list"
+color="true"
+
+# Enable multi-call functionality
+case "${0##*/}" in
+    *"6") iptables="ip6tables" ;;
+    *) iptables="iptables" ;;
+esac
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-a"|"--all") all="true" ;;
+        "--clear") action="clear" ;;
+        "-c"|"--close"*) action="close"; port="$(long_opt "$@")" ;;
+        "-h"|"--help") help="true" ;;
+        "-l"|"--list") action="list" ;;
+        "--no-color") unset color ;;
+        "-o"|"--open"*) action="open"; port="$(long_opt "$@")" ;;
+        "-r"|"--reset") action="reset" ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+deps+=("$iptables")
+deps+=("lsmod")
+check_deps
+
+# Check for valid params
+[[ $# -eq 0 ]] || usage 1
+
+tbls+=("filter")
+while read -r tbl; do
+    [[ "$tbl" == "filter" ]] || tbls+=("$tbl")
+done < <(lsmod 2>/dev/null | grep -ioPs "^${iptables%s}_\K\S+" | sort)
+
+declare -a dignore
+if [[ -n $(command -v docker) ]]; then
+    # Ignore Docker interfaces
+    while read -r dint; do
+        dignore+=("$dint")
+    done < <(ip -o a | grep -ioPs "\d+:\s+\Kdocker\d+"); unset dint
+
+    # Ignore Docker networks
+    while read -r dnet; do
+        dignore+=("br-$dnet")
+    done < <(sudo docker network list -q); unset dnet
+
+    # Ignore Docker IPs
+    if [[ ${#dignore[@]} -gt 0 ]]; then
+        dreg="$(join_with "|" "${dignore[@]}")"
+        while read -r dip; do
+            dignore+=("$dip")
+        done < <(
+            ip -o a | grep -ioPs "($dreg)\s+inet\s+\K(\d{1,3}\.){3}"
+        ); unset dip
+        unset dreg
+    fi
+fi
+dignore+=("docker")
+dreg="$(join_with "|" "${dignore[@]}")"
+
+case "$action" in
+    "close") fw_close "$port" ;;
+    "clear") fw_clear ;;
+    "list") fw_list $all ;;
+    "open") fw_open "$port" ;;
+    "reset") fw_reset ;;
+esac

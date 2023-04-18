@@ -1,0 +1,371 @@
+#!/usr/bin/env bash
+
+# My own version of checksec.sh
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+check_bin() {
+    local canary="0" # gcc -fstack-protector
+    local file="$1"
+    local fortify="0" # gcc -D_FORTIFY_SOURCE=2 also BOSC
+    local new_file
+    local nx="1" # also XSpace
+    local pie="0"
+    local relro="0"
+    local rpath="5"
+    local runpath="5"
+
+    if [[ ! -f "$file" ]]; then
+        err "File $1 does not exist"
+        return
+    fi
+
+    # Resolve symlinks
+    while [[ -h "$file" ]]; do
+        # shellcheck disable=SC2012
+        new_file="$(ls -l "$file" | awk '{print $NF}')"
+        if [[ ! -f "$new_file" ]]; then
+            new_file="$(dirname "$file")/$new_file"
+        fi
+        file="$new_file"
+    done
+
+    if [[ ! -f "$file" ]]; then
+        warn "File $1 is a dead symlink"
+        return
+    fi
+    
+    if ! grep -iq "elf" < <(file "$file"); then
+        warn "File $1 is not an ELF file"
+        return
+    fi
+
+    while read -r line; do
+        [[ $line =~ GNU_RELRO ]] && ((relro |= 2))
+        [[ $line =~ BIND_NOW ]] && ((relro |= 1))
+        [[ $line =~ __stack_chk_fail ]] && canary="1"
+        [[ $line =~ GNU_STACK.+RWE ]] && nx="0"
+        [[ $line =~ Type:.+DYN\ \( ]] && pie="4"
+        [[ $line =~ \(DEBUG\) ]] && [[ $pie -eq 4 ]] && pie="1"
+        [[ $line =~ _chk@ ]] && fortify="1"
+        [[ $line =~ rpath ]] && rpath="6"
+        [[ $line =~ runpath ]] && runpath="6"
+    done < <(readelf -W -a "$file")
+
+    # RELRO <= 1 | no GNU_RELRO + BIND_NOW = no protection
+    # RELRO == 2 | GNU_RELRO + no BIND_NOW = partial
+    # RELRO == 3 | GNU_RELRO + BIND_NOW = full
+    [[ $relro -eq 1 ]] && relro="0"
+
+    declare -A output
+    info "$1"
+    output["ASLR"]="${aslr_clr[$aslr]}"
+    output["CANARY"]="${clr[$canary]}"
+    output["FORTIFY"]="${clr[$fortify]}"
+    output["NX"]="${clr[$nx]}"
+    output["PIE"]="${clr[$pie]}"
+    output["RELRO"]="${clr[$relro]}"
+    output["RPATH"]="${clr[$rpath]}"
+    output["RUNPATH"]="${clr[$runpath]}"
+    [[ -n $shield ]] && output["SHIELD"]="${shld[$shield]}"
+    if [[ -n $shieldrand ]]; then
+        output["SHIELDRAND"]="${shld[$shieldrand]}"
+    fi
+    print_output
+}
+
+check_kernel() {
+    local config_file
+    local config
+
+    if [[ -f "$HOME/proc_config.txt" ]]; then
+        config_file="$HOME/proc_config.txt"
+        config="$(grep -Esv "^\s*#" "$config_file")"
+        config_file="/proc/config.gz"
+    elif [[ -f /proc/config.gz ]]; then
+        config_file="/proc/config.gz"
+        config="$(zcat "$config_file" 2>/dev/null | grep -Ev "^\s*#")"
+    elif [[ -f "/boot/config-$(uname -r)" ]]; then
+        config_file="/boot/config-$(uname -r)"
+        config="$(grep -Esv "^\s*#" "$config_file")"
+    elif [[ -f "${KBUILD_OUTPUT:-/usr/src/linux}/.config" ]]; then
+        config="${KBUILD_OUTPUT:-/usr/src/linux}/.config_file"
+        config="$(grep -Esv "^\s*#" "$config_file")"
+    else
+        err "Kernel config not found"
+        return
+    fi
+
+    info "Kernel config: $config_file"
+    echo
+    check_kernel_std
+    echo
+    check_kernel_grsecurity_pax
+    echo
+    check_kernel_heap
+}
+
+check_kernel_grsecurity_pax() {
+    local grk_hidesym="0"
+    local grk_io="0"
+    local grk_kmem="0"
+    local grk_modhard="0"
+    local grkernsec="0"
+    local grsecurity="0"
+
+    local pax_deref="0"
+    local pax_kernexec="0"
+    local pax_ref="0"
+    local pax_usercp="0"
+
+    # grsecurity/PaX
+    [[ $config =~ "CONFIG_GRKERNSEC=y" ]] && grsecurity="1"
+    [[ $config =~ "CONFIG_GRKERNSEC_HIDESYM=y" ]] && grk_hidesym="1"
+    [[ $config =~ "CONFIG_GRKERNSEC_HIGH=y" ]] && grkernsec="1"
+    [[ $config =~ "CONFIG_GRKERNSEC_IO=y" ]] && grk_io="1"
+    [[ $config =~ "CONFIG_GRKERNSEC_KMEM=y" ]] && grk_kmem="1"
+    [[ $config =~ "CONFIG_GRKERNSEC_LOW=y" ]] && grkernsec="3"
+    [[ $config =~ "CONFIG_GRKERNSEC_MEDIUM=y" ]] && grkernsec="2"
+    [[ $config =~ "CONFIG_GRKERNSEC_MODHARDEN=y" ]] && grk_modhard="1"
+    [[ $config =~ "CONFIG_PAX_KERNEXEC=y" ]] && pax_kernexec="1"
+    [[ $config =~ "CONFIG_PAX_MEMORY_UDEREF=y" ]] && pax_deref="1"
+    [[ $config =~ "CONFIG_PAX_REFCOUNT=y" ]] && pax_ref="1"
+    [[ $config =~ "CONFIG_PAX_USERCOPY=y" ]] && pax_usercp="1"
+
+    declare -A output
+    info "grsecurity/PaX"
+    if [[ $grsecurity -eq 1 ]]; then
+        output["Autoload harden module"]="${clr[$grk_modhard]}"
+        output["Bounds check heap obj cp"]="${clr[$pax_usercp]}"
+        output["Disable privileged I/O"]="${clr[$grk_io]}"
+        output["Disable writing to kmem/mem/port"]="${clr[$grk_kmem]}"
+        output["grsecurity/PaX"]="${grkern[$grkernsec]}"
+        output["Hide kernel syms"]="${clr[$grk_hidesym]}"
+        output["Non-exec kernel pages"]="${clr[$pax_kernexec]}"
+        output["Prevent kobject refcount overflow"]="${clr[$pax_ref]}"
+        output["Prevent userspace ptr deref"]="${clr[$pax_deref]}"
+    else
+        output["grsecurity/PaX"]="${clr[0]}"
+    fi
+    print_output
+}
+
+check_kernel_heap() {
+    local kernheap="0"
+
+    # Kernel heap hardening
+    [[ $config =~ "CONFIG_KERNHEAP=y" ]] && ((kernheap |= 2))
+    if [[ $config =~ "CONFIG_KERNHEAP_FULLPOISON=y" ]]; then
+        ((kernheap |= 1))
+    fi
+
+    # KERNHEAP <= 1 | no KERNHEAP + FULLPOISON = no protection
+    # KERNHEAP == 2 | KERNHEAP + no FULLPOISON = partial
+    # KERNHEAP == 3 | KERNHEAP + FULLPOISON = full
+    [[ $kernheap -eq 1 ]] && kernheap="0"
+
+    declare -A output
+    info "Kernel heap hardening"
+    output["KERNHEAP"]="${clr[$kernheap]}"
+    print_output
+}
+
+check_kernel_std() {
+    local devkmem_access="1"
+    local devmem_access="0"
+    local gcc_protector="0"
+    local rodata="0"
+    local user_cp_chks="0"
+
+    # Standard kernel config
+    [[ $config =~ "CONFIG_CC_STACKPROTECTOR=y" ]] && gcc_protector="1"
+    [[ $config =~ "CONFIG_DEBUG_RODATA=y" ]] && rodata="1"
+    if [[ $config =~ "CONFIG_DEBUG_STRICT_USER_COPY_CHECKS=y" ]]; then
+        user_cp_chks="1"
+    fi
+    [[ $config =~ "CONFIG_DEVKMEM=y" ]] && devkmem_access="0"
+    [[ $config =~ "CONFIG_STRICT_DEVMEM=y" ]] && devmem_access="1"
+
+    declare -A output
+    info "Kernel protections"
+    output["GCC stack protector"]="${clr[$gcc_protector]}"
+    output["Restrict /dev/kmem access"]="${clr[$devkmem_access]}"
+    output["Restrict /dev/mem access"]="${clr[$devmem_access]}"
+    output["RO kernel data"]="${clr[$rodata]}"
+    output["Strict user cp checks"]="${clr[$user_cp_chks]}"
+    print_output
+}
+
+print_output() {
+    if [[ -n $wide ]]; then
+        (
+            local one
+            local two
+
+            for key in $(
+                for i in "${!output[@]}"; do
+                    echo "${i// /_}"
+                done | sort -f
+            ); do
+                key="${key//_/ }"
+                one="$one${color:+\e[36m}$key\e[0m|"
+                two="$two${output[$key]}|"
+            done
+
+            echo -e "$one"
+            echo -e "$two"
+        ) | column -s "|" -t
+    else
+        (
+            for key in "${!output[@]}"; do
+                echo -e "${color:+\e[36m}$key:\e[0m|${output[$key]}"
+            done | sort -f
+        ) | column -s "|" -t
+    fi
+}
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS] <elfbin/dir>... [elfbin/dir]
+
+DESCRIPTION
+    Evaluate the security posture of the system.
+
+OPTIONS
+    -h, --help      Display this help message
+    -k, --kernel    Check the kernel config
+    --no-color      Disable colorized output
+    -p, --procs     Using running processes as input
+    -w, --wide      Use wide output to reduce number of output lines
+
+EOF
+    exit "$1"
+}
+
+declare -a args
+unset help kernel procs wide
+aslr="$(
+    cat /proc/sys/kernel/randomize_va_space 2>/dev/null || echo "0"
+)"
+color="true"
+shield="$(cat /proc/sys/kernel/exec-shield 2>/dev/null)"
+shieldrand="$(cat /proc/sys/kernel/exec-shield-randomize 2>/dev/null)"
+[[ -z $shieldrand ]] || ((shieldrand += 3))
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-h"|"--help") help="true" ;;
+        "-k"|"--kernel") kernel="true" ;;
+        "--no-color") unset color ;;
+        "-p"|"--procs") procs="true" ;;
+        "-w"|"--wide") wide="true" ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+dep+=("file")
+dep+=("readelf")
+check_deps
+
+# Check for valid params
+[[ $# -ge 1 ]] || [[ -n $kernel$procs ]] || usage 1
+
+declare -A aslr_clr clr grkern shld
+
+aslr_clr[0]="${color:+\e[31m}-disabled\e[0m"
+aslr_clr[1]="${color:+\e[33m}?conservative\e[0m"
+aslr_clr[2]="${color:+\e[32m}+all\e[0m"
+
+clr[0]="${color:+\e[31m}-disabled\e[0m"
+clr[1]="${color:+\e[32m}+enabled\e[0m"
+clr[2]="${color:+\e[33m}?partial\e[0m"
+clr[3]="${color:+\e[32m}+full\e[0m"
+clr[4]="${color:+\e[33m}?dyn shared obj\e[0m"
+clr[5]="${color:+\e[32m}+disabled\e[0m"
+clr[6]="${color:+\e[31m}-enabled\e[0m"
+
+grkern[0]="${color:+\e[33m}?custom\e[0m"
+grkern[1]="${color:+\e[32m}+high\e[0m"
+grkern[2]="${color:+\e[33m}?medium\e[0m"
+grkern[3]="${color:+\e[31m}-low\e[0m"
+
+shld[0]="${color:+\e[31m}-disabled\e[0m"
+shld[1]="${color:+\e[32m}+marked\e[0m"
+shld[2]="${color:+\e[33m}?all (testing)\e[0m"
+shld[3]="${color:+\e[31m}-disabled\e[0m"
+shld[4]="${color:+\e[32m}+enabled\e[0m"
+
+if [[ -n $kernel ]]; then
+    check_kernel
+    echo
+fi
+
+if [[ -n $procs ]]; then
+    for bin in $(
+        ps -e -o cmd | awk '{print $1}' | \
+        xargs which -- 2>/dev/null | sort -u
+    ); do
+        check_bin "$bin"
+        echo
+    done
+fi
+
+if [[ $# -gt 0 ]]; then
+    for arg in "$@"; do
+        if [[ -d "$arg" ]]; then
+            while read -r bin; do
+                check_bin "$bin"
+                echo
+            done < <(
+                find -L "$@" -maxdepth 1 -mindepth 1 \
+                \( -type f -o -type l \) -print | sort -u
+            ); unset bin
+        else
+            check_bin "$arg"
+            echo
+        fi
+    done; unset arg
+fi

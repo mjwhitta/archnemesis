@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+# Capslock is Mod4
+xmodmap -e "remove lock = Caps_Lock"
+xmodmap -e "add mod4 = Caps_Lock"
+xmodmap -e "keysym Caps_Lock = Super_L"
+
+# Numlock
+[[ -z "$(command -v numlockx)" ]] || numlockx on &
+
+# PCManFM is run in daemon-mode to enable auto-mounting of removable
+# media
+[[ -z "$(command -v pcmanfm)" ]] || pcmanfm -d &
+[[ -z "$(command -v pcmanfm-qt)" ]] || pcmanfm-qt -d &
+
+sleep 10
+
+# Flameshot
+[[ -z "$(command -v flameshot)" ]] || flameshot &
+
+# ksnip (starts in foreground, gross)
+#[[ -z "$(command -v ksnip)" ]] || ksnip &
+
+# Local autostart script
+[[ ! -f $HOME/.autostart.local ]] || "$HOME/.autostart.local"

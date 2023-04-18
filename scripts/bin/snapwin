@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+# A script for adding aero style window snapping to Linux.
+# by Miles Whittaker <mj@whitta.dev>
+#
+# --------------------------------------------------------------------
+# The MIT License (MIT)
+#
+# Copyright (c) 2020 Miles Whittaker
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# --------------------------------------------------------------------
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+get_previous() { grep -oPs "^$1\s+\K.+" "$snap_hist"; }
+
+json_get() { jq -cr ".$*" "$config" | sed -r "s/^null$//g"; }
+
+lock() { touch "$snap_hist.lock"; locked="true"; }
+
+perform_snap() {
+    local id="$1"
+    local previous="${2:-null}"
+    local new="$3"
+
+    local h w x y
+
+    case "$previous" in
+        "$new" )
+            # Calculate snap values
+            x="$((hhw + (padding / 2)))"
+            y="$((hhh + (padding / 2) + offset))"
+            w="$((hw - (3 * padding / 2)))"
+            h="$((hh - (3 * padding / 2) - frame))"
+
+            # Snap
+            xdosnap "$id" "$x" "$y" "$w" "$h"
+            ;;
+        *)
+            # Calculate snap values
+            case "$new" in
+                "bottom")
+                    x="$padding"
+                    y="$((hh + (padding / 2) + offset))"
+                    w="$((width - (2 * padding)))"
+                    h="$((hh - (3 * padding / 2) - frame))"
+                    ;;
+                "bottom-left")
+                    x="$padding"
+                    y="$((hh + (padding / 2) + offset))"
+                    w="$((hw - (3 * padding / 2)))"
+                    h="$((hh - (3 * padding / 2) - frame))"
+                    ;;
+                "bottom-right")
+                    x="$((hw + (padding / 2)))"
+                    y="$((hh + (padding /  2) + offset))"
+                    w="$((hw - (3 * padding / 2)))"
+                    h="$((hh - (3 * padding / 2) - frame))"
+                    ;;
+                "center")
+                    x="$((hhw + (padding / 2)))"
+                    y="$((padding + offset))"
+                    w="$((hw - (3 * padding / 2)))"
+                    h="$((height - (2 * padding) - frame))"
+                    ;;
+                "left")
+                    x="$padding"
+                    y="$((padding + offset))"
+                    w="$((hw - (3 * padding / 2)))"
+                    h="$((height - (2 * padding) - frame))"
+                    ;;
+                "max")
+                    x="$padding"
+                    y="$((padding + offset))"
+                    w="$((width - (2 * padding)))"
+                    h="$((height - (2 * padding) - frame))"
+                    ;;
+                "min")
+                    x="$((hhw + (padding / 2)))"
+                    y="$((hhh + (padding / 2) + offset))"
+                    w="$((hw - (3 * padding / 2)))"
+                    h="$((hh - (3 * padding / 2) - frame))"
+                    ;;
+                "right")
+                    x="$((hw + (padding / 2)))"
+                    y="$((padding + offset))"
+                    w="$((hw - (3 * padding / 2)))"
+                    h="$((height - (2 * padding) - frame))"
+                    ;;
+                "top")
+                    x="$padding"
+                    y="$((padding + offset))"
+                    w="$((width - (2 * padding)))"
+                    h="$((hh - (3 * padding / 2) - frame))"
+                    ;;
+                "top-left")
+                    x="$padding"
+                    y="$((padding + offset))"
+                    w="$((hw - (3 * padding / 2)))"
+                    h="$((hh - (3 * padding / 2) - frame))"
+                    ;;
+                "top-right")
+                    x="$((hw + (padding / 2)))"
+                    y="$((padding + offset))"
+                    w="$((hw - (3 * padding / 2)))"
+                    h="$((hh - (3 * padding / 2) - frame))"
+                    ;;
+            esac
+
+            # Snap
+            xdosnap "$id" "$x" "$y" "$w" "$h"
+
+            # Set any needed maximized attributes
+            case "$new" in
+               "min") xdotool windowminimize "$id"
+            esac
+
+            # Create new entry
+            [[ $new == "min" ]] || echo "$id $new" >>"$snap_hist"
+            ;;
+    esac
+}
+
+replay_snaps() {
+    local id
+    local previous
+
+    rm -f "$snap_replay"
+    mv -f "$snap_hist" "$snap_replay"
+
+    while read -r id previous; do
+        perform_snap "$id" "" "$previous"
+    done <"$snap_replay"; unset id previous
+
+    rm -f "$snap_replay"
+}
+
+# shellcheck disable=SC2155
+snap_current_window() {
+    # Get unique ID
+    local wid="$(xdotool getactivewindow)"
+    local pid="$(xdotool getwindowpid "$wid")"
+    [[ -n $pid ]] || pid="$RANDOM"
+    local id="$wid-$pid"
+    if [[ -z $id ]]; then
+        unlock
+        errx 4 "Could not determine window identifiers"
+    fi
+
+    # Ignore wallpaper programs
+    case "$(xdotool getwindowname "$wid")" in
+        "pcmanfm"*) return ;;
+    esac
+
+    # Check history file for entry and see if matches current location
+    local previous="$(get_previous "$id")"
+
+    # Remove old entries and any blank lines
+    sed -r "/^$id\s|^\s*$/d" "$snap_hist" >"$snap_hist.tmp"
+    while read -r line; do
+        if xdotool getwindowgeometry "${line%% *}" &>/dev/null; then
+            echo "$line"
+        fi
+    done <"$snap_hist.tmp" >"$snap_hist"; unset line
+    rm -f "$snap_hist.tmp"
+
+    perform_snap "$id" "$previous" "$snap_option"
+}
+
+unlock() { [[ -z $locked ]] || rm -f "$snap_hist.lock"; }
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS] [width] [height]
+
+DESCRIPTION
+    Simple window management tool. A minimal config can be found at:
+    $HOME/.config/${0##*/}/rc.
+
+OPTIONS
+    -b, --bottom          Snap active window to bottom
+    --bottom-left         Snap active window to bottom-left
+    --bottom-right        Snap active window to bottom-right
+    -c, --center          Snap active window to center
+    -f, --frame=FRAME     Specify frame size (default: 20)
+    -h, --help            Display this help message
+    -l, --left            Snap active window to left
+    -m, --max             Maximize window
+    -n, --min             Minimize widow
+    --no-color            Disable colorized output
+    -o, --offset=SIZE     Specify offset from top (default: 0)
+    -p, --padding=SIZE    Specify padding (default: 0)
+    --replay              Replay all snaps with current geometry
+                          (default)
+    -r, --right           Snap active window to right
+    -t, --top             Snap active window to top
+    --top-left            Snap active window to top-left
+    --top-right           Snap active window to top-right
+
+EOF
+    exit "$1"
+}
+
+wait_for_lock() {
+    for _ in {1..20}; do
+        [[ -f "$snap_hist.lock" ]] || break
+        sleep 0.1
+    done
+
+    if [[ -f "$snap_hist.lock" ]]; then
+        unlock
+        errx 3 "Lock file exists"
+    fi
+}
+
+xdosnap() {
+    local h="$5"
+    local w="$4"
+    local wid="$1"
+    local x="$2"
+    local y="$3"
+
+    local newy pos ydiff
+
+    # Initial move
+    xdotool windowmove "$wid" "$x" "$y" windowsize "$wid" "$w" "$h"
+
+    # Get new values
+    pos="$(xdotool getwindowgeometry "$wid" | grep -ioPs "\d+,\d+")"
+    newy="${pos##*,}"
+    ydiff="$((newy - y - frame))"
+
+    # Ensure location is accurate
+    if [[ $((ydiff - frame)) -lt 0 ]]; then
+        xdotool windowmove "$wid" "$x" "$((y + frame))"
+    fi
+}
+
+declare -a args
+unset help locked
+color="true"
+config="$HOME/.config/${0##*/}/rc"
+snap_hist="/tmp/${0##*/}.hist"
+snap_option="replay"
+snap_replay="/tmp/${0##*/}.replay"
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-b"|"--bottom") snap_option="bottom" ;;
+        "--bottom-left") snap_option="bottom-left" ;;
+        "--bottom-right") snap_option="bottom-right" ;;
+        "-c"|"--center") snap_option="center" ;;
+        "-f"|"--frame"*) frame="$(long_opt "$@")" ;;
+        "-h"|"--help") help="true" ;;
+        "-l"|"--left") snap_option="left" ;;
+        "-m"|"--max") snap_option="max" ;;
+        "-n"|"--min") snap_option="min" ;;
+        "--no-color") unset color ;;
+        "-o"|"--offset"*) offset="$(long_opt "$@")" ;;
+        "-p"|"--padding"*) padding="$(long_opt "$@")" ;;
+        "--replay") snap_option="replay" ;;
+        "-r"|"--right") snap_option="right" ;;
+        "-t"|"--top") snap_option="top" ;;
+        "--top-left") snap_option="top-left" ;;
+        "--top-right") snap_option="top-right" ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+deps+=("jq")
+deps+=("xdotool")
+deps+=("xrandr")
+check_deps
+
+# Check for valid params
+[[ $# -eq 0 ]] || [[ $# -eq 2 ]] || usage 1
+
+# Ensure history file exists
+touch "$snap_hist"
+
+# Ensure config exists
+if [[ ! -f $config ]]; then
+    mkdir -p "$(dirname "$config")"
+    cat >"$config" <<EOF
+{
+  "frame": 16,
+  "offset": 16,
+  "padding": 8
+}
+EOF
+fi
+
+# Read from config if not passed on cli
+[[ -n $frame ]] || frame="$(json_get "frame")"
+[[ -n $offset ]] || offset="$(json_get "offset")"
+[[ -n $padding ]] || padding="$(json_get "padding")"
+
+if [[ $# -eq 2 ]]; then
+    height="$2"
+    width="$1"
+else
+    geometry="$(xrandr | grep -oPs "current \K[^,]+")"
+    if [[ -z $geometry ]]; then
+        unlock
+        errx 2 "Could not determine geometry"
+    fi
+    height="${geometry##*x }"
+    width="${geometry%% x*}"
+fi
+
+((height -= 25)) # Why is this needed now?
+
+((height -= offset))
+hw="$((width / 2))"
+hhw="$((width / 4))"
+hh="$((height / 2))"
+hhh="$((height / 4))"
+
+wait_for_lock
+lock
+
+case "$snap_option" in
+    "replay") replay_snaps ;;
+    *) snap_current_window ;;
+esac
+
+unlock

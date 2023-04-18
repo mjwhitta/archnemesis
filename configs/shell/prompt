@@ -1,0 +1,670 @@
+# shellcheck disable=SC2155 shell=bash
+
+# If not running interactively, don't do anything
+[[ $- == *i* ]] || return
+
+# My custom prompt. I've separated this so I can easily customize and
+# share it.
+
+# {{{ Helper utils
+export NEMESIS_PROMPT_SHELL="$(command -v zsh)"
+[[ -z $BASH ]] || export NEMESIS_PROMPT_SHELL="$BASH"
+case "$NEMESIS_PROMPT_SHELL" in
+    *"zsh") # We only want major.minor w/o the decimal
+        # Get version string
+        NEMESIS_PROMPT_ZSHV="$(zsh --version)"
+        # Remove beginning and end of string to get just version
+        NEMESIS_PROMPT_ZSHV="${NEMESIS_PROMPT_ZSHV#* }"
+        NEMESIS_PROMPT_ZSHV="${NEMESIS_PROMPT_ZSHV%% *}"
+        # Remove first decimal
+        NEMESIS_PROMPT_ZSHV="${NEMESIS_PROMPT_ZSHV/\./}"
+        # Remove the last decimal and anything after
+        export NEMESIS_PROMPT_ZSHV="${NEMESIS_PROMPT_ZSHV%\.*}"
+        ;;
+esac
+# }}}
+
+# {{{ Functions
+# {{{ __nemesis_colors
+# Get color escape codes
+# $1 = fg
+# $2 = bg
+function __nemesis_colors() {
+    [[ $# -le 2 ]] || return
+
+    local bgcode=""
+    local fgcode="\e[0m"
+
+    if [[ $# -ge 1 ]]; then
+        local fgclr="$1"
+        case "$fgclr" in
+            "default") ;;
+            "black") fgcode="\e[30m" ;;
+            "red") fgcode="\e[31m" ;;
+            "green") fgcode="\e[32m" ;;
+            "yellow") fgcode="\e[33m" ;;
+            "blue") fgcode="\e[34m" ;;
+            "magenta") fgcode="\e[35m" ;;
+            "cyan") fgcode="\e[36m" ;;
+            "white") fgcode="\e[37m" ;;
+            "light_black") fgcode="\e[90m" ;;
+            "light_red") fgcode="\e[91m" ;;
+            "light_green") fgcode="\e[92m" ;;
+            "light_yellow") fgcode="\e[93m" ;;
+            "light_blue") fgcode="\e[94m" ;;
+            "light_magenta") fgcode="\e[95m" ;;
+            "light_cyan") fgcode="\e[96m" ;;
+            "light_white") fgcode="\e[97m" ;;
+            *) fgcode="\e[38;5;${fgclr}m" ;;
+        esac
+    fi
+
+    if [[ $# -eq 2 ]]; then
+        local bgclr="$2"
+        case "$bgclr" in
+            "default") ;;
+            "black") bgcode="\e[40m" ;;
+            "red") bgcode="\e[41m" ;;
+            "green") bgcode="\e[42m" ;;
+            "yellow") bgcode="\e[43m" ;;
+            "blue") bgcode="\e[44m" ;;
+            "magenta") bgcode="\e[45m" ;;
+            "cyan") bgcode="\e[46m" ;;
+            "white") bgcode="\e[47m" ;;
+            "light_black") bgcode="\e[100m" ;;
+            "light_red") bgcode="\e[101m" ;;
+            "light_green") bgcode="\e[102m" ;;
+            "light_yellow") bgcode="\e[103m" ;;
+            "light_blue") bgcode="\e[104m" ;;
+            "light_magenta") bgcode="\e[105m" ;;
+            "light_cyan") bgcode="\e[106m" ;;
+            "light_white") bgcode="\e[107m" ;;
+            *) bgcode="\e[48;5;${bgclr}m" ;;
+        esac
+    fi
+
+    case "$NEMESIS_PROMPT_SHELL" in
+        *"bash") echo -n "\\[$fgcode$bgcode\\]" ;;
+        *"zsh") echo -n "%{$fgcode$bgcode%}" ;;
+    esac
+}
+# }}}
+
+# {{{ __nemesis_cwd
+# Current working directory
+# $1 = format in the form of cwd;fgclr;bgclr[;fill]
+# $2 = the width needed to truncate the cwd
+function __nemesis_cwd() {
+    [[ $# -eq 2 ]] || return
+
+    local cwd
+    local fill
+    local fmt
+    local i
+    local length
+    local offset
+    local width
+
+    # Normalized cwd
+    cwd="$PWD"
+    case "$cwd" in
+        "$HOME"*) cwd="~${cwd##"$HOME"}" ;;
+    esac
+    cwd="${cwd//\// / }"
+    cwd="${cwd## }"
+
+    # Check if fitting to width
+    case "$1" in
+        *";fill"*) fill="true" ;;
+    esac
+
+    # Get color code format string
+    fmt="$(__nemesis_format_parse "$1" "cwd" 2)"
+
+    length="${#cwd}"
+    offset="0"
+
+    width="$2"
+    ((width -= 2)) # Because of leading and trailing space
+    [[ $width -ge 0 ]] || width="0"
+
+    if [[ $length -le $width ]]; then
+        if [[ -n $fill ]]; then
+            ((offset = width - length))
+            unset fill
+            for ((i = 0; i < offset; ++i)); do fill+=" "; done
+            unset i
+        fi
+
+        cwd+="$fill"
+    else
+        ((offset = length - width + 4)) # 4 for the leading "... "
+        cwd="... ${cwd:$offset:$width}"
+        case "$cwd" in
+            "...  "*) cwd="${cwd/\.\.\. /...} " ;;
+        esac
+    fi
+
+    __nemesis_format "$fmt" "${cwd:0:$width}"
+}
+# }}}
+
+# {{{ __nemesis_date
+# Timestamp
+# $1 = format in the form of date;fgclr;bgclr
+function __nemesis_date() {
+    [[ $# -eq 1 ]] || return
+
+    local date="$(date +%FT%H:%M:%S%z)"
+    local fmt="$(__nemesis_format_parse "$1" "date" 2)"
+
+    __nemesis_format "$fmt" "$date"
+}
+#}}}
+
+# {{{ __nemesis_exit_status
+# Exit status
+# $1 = format in the form of
+#      exit;fgclr;bgclr[;<emotes|unsupported>;fgclr;bgclr]
+# $2 = last exit status
+function __nemesis_exit_status() {
+    [[ $# -eq 2 ]] || return
+
+    local fmt="$(__nemesis_format_parse "$1" "exit" 2)"
+    local status_symbol="$2"
+    [[ $status_symbol -ne 130 ]] || status_symbol="0" # Ignore ^C
+
+    case "$1" in
+        *";emotes"*)
+            if [[ status_symbol -eq 0 ]]; then
+                fmt="$(__nemesis_format_parse "$1" "emotes" 2)"
+                case "$(__nemesis_rand_status 3)" in
+                    "0")   status_symbol="=)" ;;
+                    "1") status_symbol="(^.^)" ;;
+                    *) status_symbol="¯\_(^.^)_/¯" ;;
+                esac
+            else
+                case "$(__nemesis_rand_status 9)" in
+                    "0") status_symbol="=(" ;;
+                    "1") status_symbol="(-_-)" ;;
+                    "2") status_symbol="¯\_(-_-)_/¯" ;;
+                    "3") status_symbol="\(⊙_⊙)/" ;;
+                    "4") status_symbol="(o‵-′)o" ;;
+                    "5") status_symbol="(‵-′)b" ;;
+                    "6") status_symbol="(>_<)" ;;
+                    "7") status_symbol="(°⌂°)" ;;
+                    *) status_symbol="(;⌒;)" ;;
+                esac
+            fi
+            ;;
+        *";unsupported"*)
+            if [[ status_symbol -eq 0 ]]; then
+                fmt="$(__nemesis_format_parse "$1" "unsupported" 2)"
+                case "$(__nemesis_rand_status 6)" in
+                    "0")   status_symbol="=)" ;;
+                    "1") status_symbol="(^ت^)" ;;
+                    "2") status_symbol="¯\_(^ت^)_/¯" ;;
+                    "3") status_symbol="(ツ)" ;;
+                    "4") status_symbol="¯\_(ツ)_/¯" ;;
+                    *) status_symbol="(^‿^)" ;;
+                esac
+            else
+                case "$(__nemesis_rand_status 15)" in
+                    "0") status_symbol="=(" ;;
+                    "1") status_symbol="(-_-)" ;;
+                    "2") status_symbol="¯\_(-_-)_/¯" ;;
+                    "3") status_symbol="\(⊙_⊙)/" ;;
+                    "4") status_symbol="(o‵′)o" ;;
+                    "5") status_symbol="(‵-′)b" ;;
+                    "6") status_symbol="(>_<)" ;;
+                    "7") status_symbol="(°⌂°)" ;;
+                    "8") status_symbol="(;⌒;)" ;;
+                    "9") status_symbol="(╯°⌂°)╯︵┻━┻ " ;;
+                    "10") status_symbol="┻━┻ ︵ヽ(°⌂°)ﾉ︵ ┻━┻ " ;;
+                    "11") status_symbol="(ಠ_ಠ)" ;;
+                    "12") status_symbol="(ಠ╭╮ಠ)" ;;
+                    "13") status_symbol="(ಥ_ಥ)" ;;
+                    *) status_symbol="(ง‵-′)ง" ;;
+                esac
+            fi
+            ;;
+        *) [[ $status_symbol -gt 0 ]] || status_symbol="" ;;
+    esac
+
+    __nemesis_format "$fmt" "$status_symbol"
+}
+# }}}
+
+# {{{ __nemesis_format
+# Used to format a string
+# $1 = format in the form of ignore;fgclr;bgclr
+# $2 = string
+function __nemesis_format() {
+    [[ $# -eq 2 ]] || return
+
+    local bgclr
+    local fgclr
+    local len
+    local out
+
+    fgclr="${1#*;}"
+    fgclr="${fgclr%%;*}"
+    bgclr="${1##*;}"
+
+    len="${#2}"
+    [[ -z $2 ]] || ((len+=2))
+
+    # Provide length
+    out="$len|"
+
+    # Set colors
+    out+="$(__nemesis_colors "$fgclr" "$bgclr")"
+
+    # And a leading and trailing space
+    out+=" $2 "
+
+    # Restore colors
+    out+="$(__nemesis_colors)"
+
+    echo -n "$out"
+}
+# }}}
+
+# {{{ __nemesis_format_parse
+# Used to parse format for a string
+# $1 = string to parse
+# $2 = name
+# $3 = params
+function __nemesis_format_parse() {
+    [[ $# -eq 3 ]] || return
+
+    local fmt
+    local i
+    local tmp
+
+    case "$1" in
+        *"$2;"*)
+            fmt="$2"
+            tmp="${1##*"$2";}"
+            tmp="${tmp%% *}"
+
+            for ((i = 0; i < $3; ++i)); do
+                fmt="$fmt;${tmp%%;*}"
+                tmp="${tmp#*;}"
+            done; unset i tmp
+            ;;
+        *) [[ $3 -ne 2 ]] || fmt="$2;default;default" ;;
+    esac
+
+    echo "$fmt"
+}
+# }}}
+
+# {{{ __nemesis_git_status
+# Git info
+# $1 = format in the form of git;fgclr;bgclr
+function __nemesis_git_status() {
+    [[ $# -eq 1 ]] || return
+    [[ -n $(command -v git) ]] || return
+
+    local fmt="$(__nemesis_format_parse "$1" "git" 2)"
+    local git
+    local gitdir
+    local line
+    local modified
+    local numdiffs="0"
+    local untracked="0"
+
+    gitdir="$(git rev-parse --show-toplevel 2>/dev/null)"
+    [[ -n $gitdir ]] || return
+
+    if [[ -f "$HOME/.git.nostatus" ]]; then
+        while read -r line; do
+            case "$line" in
+                "$gitdir") return ;;
+            esac
+        done <"$HOME/.git.nostatus"; unset line
+    fi
+
+    while read -r line; do
+        case "$line" in
+            "st"*) ;; # ignore
+            "##"*)
+                git="${line%%\.\.\.*}"
+                git="${git#* }"
+                git="${git//No commits yet on }"
+                [[ -n $git ]] || return
+
+                case "$line" in
+                    *"ahead"*"behind"*)
+                        git+=" ↑${line##*ahead }"
+                        git="${git%,*}"
+                        git+=" ↓${line##*behind }"
+                        git="${git%]}"
+                        modified="true"
+                        ;;
+                    *"ahead"*)
+                        git+=" ↑${line##*ahead }"
+                        git="${git%]}"
+                        modified="true"
+                        ;;
+                    *"behind"*)
+                        git+=" ↓${line##*behind }"
+                        git="${git%]}"
+                        modified="true"
+                        ;;
+                esac
+                ;;
+            "??"*) ((untracked+=1)); modified="true" ;;
+            *) ((numdiffs+=1)); modified="true" ;;
+        esac
+    done < <(git status -b --porcelain --ignore-submodules=dirty)
+    unset line
+
+    [[ $numdiffs -eq 0 ]] || git+=" +$numdiffs"
+    [[ $untracked -eq 0 ]] || git+=" ..."
+    [[ -n $modified ]] || git+=" ✓"
+
+    __nemesis_format "$fmt" "$git"
+}
+# }}}
+
+# {{{ __nemesis_host
+# Hostname and related metadata
+# $1 = format in the form of
+#      host;fgclr;bgclr[;remote;fgclr;bgclr][;root;fgclr;bgclr][;hide_local]
+function __nemesis_host() {
+    [[ $# -eq 1 ]] || return
+
+    local fmt="$(__nemesis_format_parse "$1" "host" 2)"
+    local host="$USER@$(hostname -s)"
+    local remote="$(__nemesis_format_parse "$1" "remote" 2)"
+    local root="$(__nemesis_format_parse "$1" "root" 2)"
+
+    [[ -z $SSH_CONNECTION ]] || [[ -z $remote ]] || fmt="$remote"
+    [[ $USER != "root" ]] || [[ -z $root ]] || fmt="$root"
+
+    case "$1" in
+        *";hide_local"*) [[ -z $SSH_CONNECTION ]] || host="$USER" ;;
+    esac
+
+    __nemesis_format "$fmt" "$host"
+}
+# }}}
+
+# {{{ __nemesis_prompt
+# Set prompt
+function __nemesis_prompt() {
+    local exit_status="$?"
+
+    if [[ ${#NEMESIS_PROMPT[@]} -gt 0 ]]; then
+        case "$NEMESIS_PROMPT_SHELL" in
+            *"zsh") export NEMESIS_PROMPT_MODE="$VI_INS" ;;
+        esac
+        [[ -n $NEMESIS_OLD_PS1 ]] || export NEMESIS_OLD_PS1="$PS1"
+        export PS1="$(__nemesis_prompt_ps1 $exit_status)"
+    else
+        if [[ -n $NEMESIS_OLD_PS1 ]]; then
+            export PS1="$NEMESIS_OLD_PS1"
+            unset NEMESIS_OLD_PS1
+        fi
+    fi
+}
+# }}}
+
+# {{{ __nemesis_prompt_ps1
+# Prompt PS1 string
+# $1 = last exit status
+function __nemesis_prompt_ps1() {
+    [[ $# -eq 1 ]] || return
+
+    local -A p
+    local cwddone
+    local cwdwidth="$COLUMNS"
+    local date
+    local exit_status="$1"
+    local fmt
+    local i
+    local len
+    local subtract="0"
+
+    case "$NEMESIS_PROMPT_SHELL" in
+        *"zsh")
+            [[ $NEMESIS_PROMPT_ZSHV -ge 55 ]] || ((cwdwidth -= 1))
+            ;;
+    esac
+
+    for i in "${NEMESIS_PROMPT[@]}"; do
+        len="0"
+
+        case "$i" in
+            "cwd"*) cwddone="true" ;;
+            "date"*)
+                p[date]="$(__nemesis_date "$i")"
+                len="${p[date]%%|*}"
+                ;;
+            "exit"*)
+                p[exit]="$(__nemesis_exit_status "$i" "$exit_status")"
+                len="${p[exit]%%|*}"
+                ;;
+            "git"*)
+                p[git]="$(__nemesis_git_status "$i")"
+                len="${p[git]%%|*}"
+                ;;
+            "host"*)
+                p[host]="$(__nemesis_host "$i")"
+                len="${p[host]%%|*}"
+                ;;
+            "newline")
+                if [[ -n $cwddone ]]; then
+                    cwdwidth="$((COLUMNS - subtract))"
+                    unset cwddone
+                fi
+                subtract="0"
+                ;;
+            "prompt"*)
+                p[prompt]="$(__nemesis_prompt_sym "$i")"
+                len="${p[prompt]%%|*}"
+                ;;
+            "simple")
+                case "$NEMESIS_PROMPT_SHELL" in
+                    *"bash") printf "[\\\u@\h: \w]\n\$ " ;;
+                    *"zsh") printf "[%%n@%%m: %%~]\n\$ " ;;
+                esac
+                return 0
+                ;;
+            "simple+")
+                date="$(date +%FT%H:%M:%S%z)"
+                case "$NEMESIS_PROMPT_SHELL" in
+                    *"bash") printf "\n \\\u@\h $date\n \w\n \$ " ;;
+                    *"zsh") printf "\n %%n@%%m $date\n %%~\n \$ " ;;
+                esac
+                return 0
+                ;;
+            "venv"*)
+                p[venv]="$(__nemesis_python_venv "$i")"
+                len="${p[venv]%%|*}"
+                ;;
+            "vi_cmd"*|"vi_ins"*)
+                p[mode]="$(__nemesis_vi_mode "$i")"
+                len="${p[mode]%%|*}"
+                ;;
+        esac
+        ((subtract += ${len:-0}))
+    done; unset i
+
+    # CWD
+    fmt="$(__nemesis_format_parse "${NEMESIS_PROMPT[*]}" "cwd" 3)"
+    p[cwd]="$(__nemesis_cwd "$fmt" "$cwdwidth")"
+
+    # Put it together
+    for i in "${NEMESIS_PROMPT[@]}"; do
+        case "$i" in
+            "date"*)
+                len="${p[date]%%|*}"
+                [[ $len -eq 0 ]] || echo -n "${p[date]#*|}"
+                ;;
+            "cwd"*)
+                len="${p[cwd]%%|*}"
+                [[ $len -eq 0 ]] || echo -n "${p[cwd]#*|}"
+                ;;
+            "exit"*)
+                len="${p[exit]%%|*}"
+                [[ $len -eq 0 ]] || echo -n "${p[exit]#*|}"
+                ;;
+            "git"*)
+                len="${p[git]%%|*}"
+                [[ $len -eq 0 ]] || echo -n "${p[git]#*|}"
+                ;;
+            "host"*)
+                len="${p[host]%%|*}"
+                [[ $len -eq 0 ]] || echo -n "${p[host]#*|}"
+                ;;
+            "newline") echo ;;
+            "prompt"*)
+                len="${p[prompt]%%|*}"
+                [[ $len -eq 0 ]] || echo -n "${p[prompt]#*|}"
+                ;;
+            "venv"*)
+                len="${p[venv]%%|*}"
+                [[ $len -eq 0 ]] || echo -n "${p[venv]#*|}"
+                ;;
+            "vi_cmd"*|"vi_ins"*)
+                len="${p[mode]%%|*}"
+                [[ $len -eq 0 ]] || echo -n "${p[mode]#*|}"
+                ;;
+        esac
+    done; unset i
+}
+# }}}
+
+# {{{ __nemesis_prompt_sym
+# The prompt symbol
+# $1 = format in the form of prompt;fgclr;bgclr
+function __nemesis_prompt_sym() {
+    [[ $# -eq 1 ]] || return
+
+    local fmt="$(__nemesis_format_parse "$1" "prompt" 2)"
+    local sym="\$"
+
+    [[ $USER != "root" ]] || sym="#"
+
+    __nemesis_format "$fmt" "$sym"
+}
+# }}}
+
+# {{{ __nemesis_python_venv
+# The python virtual environment
+# $1 = format in the form of venv;fgclr;bgclr
+function __nemesis_python_venv() {
+    [[ $# -eq 1 ]] || return
+
+    local fmt="$(__nemesis_format_parse "$1" "venv" 2)"
+    local venv="${VIRTUAL_ENV##*/}"
+
+    __nemesis_format "$fmt" "${venv:+($venv)}"
+}
+#}}}
+
+# {{{ __nemesis_rand_status
+# Return rand value
+# $1 = rand range
+function __nemesis_rand_status() {
+    local rand="0"
+
+    # Need this b/c RANDOM doesn't update in prompt
+    if [[ -n $(command -v xxd) ]]; then
+        RANDOM="$(
+            xxd -p /dev/urandom | grep -Eos "[1-9][0-9]{0,15}" | \
+            head -n 1
+        )"
+    fi
+
+    [[ $# -ne 1 ]] || ((rand = RANDOM % $1))
+
+    echo -n "$rand"
+}
+# }}}
+
+# {{{ __nemesis_vi_mode
+# Vi mode for the simulated right prompt
+# $1 = format in the form of
+#      vi_cmd;fgclr;bgclr;vi_ins;fgclr;bgclr;vi_rep;fgclr;bgclr
+function __nemesis_vi_mode() {
+    [[ $# -eq 1 ]] || return
+    case "$NEMESIS_PROMPT_SHELL" in
+        *"zsh") ;;
+        *) return ;;
+    esac
+
+    local fmt="$(__nemesis_format_parse "$1" "vi_ins" 2)"
+
+    case "$NEMESIS_PROMPT_MODE" in
+        "$VI_CMD") fmt="$(__nemesis_format_parse "$1" "vi_cmd" 2)" ;;
+        "$VI_REP") fmt="$(__nemesis_format_parse "$1" "vi_rep" 2)" ;;
+    esac
+
+    __nemesis_format "$fmt" "$NEMESIS_PROMPT_MODE"
+}
+# }}}
+# }}}
+
+# {{{ Prompt
+# Vi mode strings
+export VI_CMD="NORMAL"
+export VI_INS="INSERT"
+export VI_REP="REPLACE"
+
+# Enable prompt
+case "$NEMESIS_PROMPT_SHELL" in
+    *"bash")
+        # set vi-cmd-mode-string $VI_CMD
+        # set vi-ins-mode-string $VI_INS
+        # set show-mode-in-prompt on
+
+        case "$PROMPT_COMMAND" in
+            *"__nemesis_prompt;"*) ;;
+            *) PROMPT_COMMAND="__nemesis_prompt; $PROMPT_COMMAND" ;;
+        esac
+        ;;
+    *"zsh")
+        function zle-keymap-select() {
+            local exit_status="$?"
+            local fmt
+            local mode
+
+            if [[ ${#NEMESIS_PROMPT[@]} -gt 0 ]]; then
+                case "$KEYMAP" in
+                    "main")
+                        case "$ZLE_STATE" in
+                            *"insert"*)
+                                export NEMESIS_PROMPT_MODE="$VI_INS"
+                                ;;
+                            *) export NEMESIS_PROMPT_MODE="$VI_REP" ;;
+                        esac
+                        ;;
+                    *) export NEMESIS_PROMPT_MODE="$VI_CMD" ;;
+                esac
+                fmt="$(
+                    __nemesis_format_parse "${NEMESIS_PROMPT[*]}" \
+                    "vi_cmd" 8
+                )"
+                if [[ -n $fmt ]]; then
+                    mode="$(__nemesis_vi_mode "$fmt")"
+                    mode="${mode#*|}"
+                    PS1="${PS1/ $VI_CMD /$mode}"
+                    PS1="${PS1/ $VI_INS /$mode}"
+                    export PS1="${PS1/ $VI_REP /$mode}"
+                fi
+            fi
+            zle reset-prompt
+        }
+        zle -N zle-keymap-select
+
+        case "${precmd_functions[(r)__nemesis_prompt]}" in
+            "__nemesis_prompt") ;;
+            *) precmd_functions+=(__nemesis_prompt) ;;
+        esac
+        ;;
+esac
+# }}}

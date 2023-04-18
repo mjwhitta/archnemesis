@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS]
+
+DESCRIPTION
+    Launch ysoserial.
+
+OPTIONS
+    -c, --clear    Clear cache and download the newest ysoserial
+    -h, --help     Display this help message
+    --no-color     Disable colorized output
+
+EOF
+    exit "$1"
+}
+
+declare -a args
+unset clear help
+color="true"
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-c"|"--clear") clear="true" ;;
+        "-h"|"--help") help="true" ;;
+        "--no-color") unset color ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+deps+=("curl")
+deps+=("find")
+deps+=("java")
+check_deps
+
+# Check for valid params
+# [[ $# -eq 0 ]] || usage 1
+
+cache="$HOME/.cache/ysoserial"
+mkdir -p "$cache"
+
+# Clear cached ysoserial if requested
+[[ -z $clear ]] || find "$cache" -name "*.jar" -exec rm -f {} +
+
+# Get ysoserial if missing
+yso="$(find "$cache" -name "ysoserial.jar")"
+if [[ -z $yso ]]; then
+    url="https://jitpack.io"
+    path="/com/github/frohoff/ysoserial/master-SNAPSHOT/"
+    path+="ysoserial-master-SNAPSHOT.jar"
+
+    name="ysoserial.jar"
+    curl -Lo "$cache/$name" "$url/$path" || \
+        errx 1 "Failed to download ysoserial jar"
+
+    yso="$(find "$cache" -name "ysoserial.jar")"
+fi
+
+java -jar "$yso" "$@"

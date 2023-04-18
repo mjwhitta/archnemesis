@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS] [args]
+
+DESCRIPTION
+    Launch JADX.
+
+OPTIONS
+    -c, --clear    Clear cache and download the newest JADX
+    -g, --gui      Launch the GUI
+    -h, --help     Display this help message
+    --no-color     Disable colorized output
+
+EOF
+    exit "$1"
+}
+
+declare -a args
+unset clear gui help
+color="true"
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-c"|"--clear") clear="true" ;;
+        "-g"|"--gui") gui="true" ;;
+        "-h"|"--help") help="true" ;;
+        "--no-color") unset color ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+deps+=("curl")
+deps+=("java")
+deps+=("unzip")
+check_deps
+
+# Check for valid params
+# [[ $# -eq 0 ]] || usage 1
+
+cache="$HOME/.cache/jadx"
+mkdir -p "$cache"
+
+# Clear cached JADX if requested
+# shellcheck disable=SC2115
+[[ -z $clear ]] || rm -fr "$cache"/*
+
+# Get JADX if missing
+jadx="$(find "$cache" -name "jadx*.zip" | sort -nr | head -n 1)"
+if [[ -z $jadx ]]; then
+    url="https://github.com"
+    path="/skylot/jadx/releases"
+
+    assets="$(
+        curl -Ls "$url$path" | \
+        grep -im 1 -oPs "expanded_assets/\K[^\"]+"
+    )"
+
+    zip="$(
+        curl -Ls "$url$path/expanded_assets/$assets" | \
+        grep -ioPs "href\=.\K.+jadx.+\d+\.\d+\.\d+\.zip" | head -n 1
+    )"
+    [[ -n $zip ]] || errx 1 "Failed to find JADX zip"
+
+    name="$(basename "$zip")"
+    curl -Lo "$cache/$name" "$url$zip" || \
+        errx 1 "Failed to download JADX zip"
+
+    jadx="$(find "$cache" -name "jadx*.zip" | sort -nr | head -n 1)"
+    unzip -d "$cache" "$jadx"
+fi
+
+[[ -z $gui ]] || "$cache/bin/jadx-gui" "$@"
+[[ -n $gui ]] || "$cache/bin/jadx" "$@"

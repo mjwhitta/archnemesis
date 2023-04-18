@@ -1,0 +1,660 @@
+# shellcheck disable=SC1090,SC1091,SC2155 shell=bash
+
+# If not running interactively, don't do anything
+[[ $- == *i* ]] || return
+
+# {{{ Helper utils
+export SHELL="$(command -v zsh)"
+[[ -z $BASH ]] || export SHELL="$BASH"
+# }}}
+
+# {{{ Bootstrap PATH
+# Find minimum dirs that should be in PATH before doing anything else
+unset PTH
+for dir in \
+    "$HOME/bin" "$HOME/.local/bin" \
+    /usr/local/bin /usr/local/sbin \
+    /usr/bin /usr/sbin \
+    /bin /sbin
+do
+    [[ ! -d "$dir" ]] || PTH="${PTH:+$PTH:}$dir"
+done; unset dir
+
+# Set PATH
+[[ -z $PTH ]] || export PATH="$PTH"
+unset PTH
+# }}}
+
+if [[ -f "$HOME/.config/shell/ssh_agent" ]]; then
+    . "$HOME/.config/shell/ssh_agent"
+fi
+
+case "$SHELL" in
+    *"bash")
+        # {{{ Bash setup
+
+        # History settings
+        export HISTSIZE="1000"
+        export HISTFILESIZE="2000"
+        export HISTCONTROL="ignoreboth"
+        shopt -s histappend #histverify
+
+        # Don't need to type cd
+        shopt -s autocd
+
+        # Fix common typos when cd'ing
+        shopt -s cdspell
+        shopt -s dirspell
+
+        # Multi-line command history
+        shopt -s cmdhist
+
+        # Enable programmable completion features (you don't need to
+        # enable this, if it's already enabled in /etc/bash.bashrc and
+        # /etc/profile sources /etc/bash.bashrc).
+        # Don't use [] around shopt command
+        if [[ -f /etc/bash_completion ]] && ! shopt -oq posix; then
+            . /etc/bash_completion
+        fi
+
+        # Super globs
+        shopt -s globstar extglob nocasematch
+
+        # Check the window size after each command and, if necessary,
+        # update the values of LINES and COLUMNS.
+        shopt -s checkwinsize
+
+        # Fix ^S
+        [[ -z $(command -v stty) ]] || stty stop ""
+        # }}}
+        ;;
+    *"zsh")
+        # {{{ Zsh setup
+        # Get version string
+        ZSHV="$(zsh --version)"
+        # Remove beginning and end of string to get just version
+        ZSHV="${ZSHV#* }"
+        ZSHV="${ZSHV%% *}"
+        # Remove first decimal
+        ZSHV="${ZSHV/\./}"
+        # Remove the last decimal and anything after
+        export ZSHV="${ZSHV%\.*}"
+
+        # History settings
+        export HISTSIZE="1000"
+        export SAVEHIST="$HISTSIZE"
+        setopt incappendhistory histexpiredupsfirst histignorealldups
+        setopt histreduceblanks sharehistory
+
+        # Completion style
+        zstyle ":completion:*" menu select
+        zstyle ":completion:*" rehash true
+        zstyle ":completion:*" verbose yes
+        zstyle ":completion:*:descriptions" format "%B%d%b"
+        zstyle ":completion:*:messages" format "%d"
+        zstyle ":completion:*:warnings" format "No matches for: %d"
+        zstyle ":completion:*:corrections" format "%B%d (err: %e)%b"
+        zstyle ":completion:*" group-name ""
+        # Tab completion should be case-insensitive
+        zstyle ":completion:*" matcher-list "m:{a-zA-Z}={A-Za-z}"
+        # Better completion for killall
+        zstyle ":completion:*:killall:*" command \
+            "ps -o comm -u \"$(id -nu)\" | tail -n +2"
+
+        zstyle :compinstall filename "$HOME/.zshrc"
+
+        # Don't need to type cd
+        setopt autocd notify
+
+        # Don't beep
+        unsetopt beep
+        setopt nobeep
+
+        # Make cd push the old directory onto the stack
+        setopt autopushd
+
+        # Turn off terminal driver flow control (CTRL+S/CTRL+Q)
+        setopt noflowcontrol
+        [[ -z $(command -v stty) ]] || stty -ixon -ixoff
+
+        # Do not kill background processes when closing the shell
+        setopt nocheckjobs
+        setopt nohup
+
+        # Tab completion enhancements
+        setopt autolist
+        setopt automenu
+        setopt completealiases
+        setopt completeinword
+        unsetopt listambiguous
+        unsetopt menucomplete
+
+        # Change the definition of "word", e.g. with ^W
+        autoload select-word-style
+        select-word-style shell
+
+        # Super globs
+        setopt extendedglob
+        unsetopt caseglob
+        unsetopt casematch
+
+        # Pound sign in interactive prompt
+        setopt interactivecomments
+
+        # Speed up file completion for git
+        function __git_files() {
+            _wanted files expl "local files" _files
+        }
+
+        # History substring search
+        autoload up-line-or-beginning-search
+        autoload down-line-or-beginning-search
+        zle -N up-line-or-beginning-search
+        zle -N down-line-or-beginning-search
+
+        for dir in \
+            "$HOME/.config/zsh/plugins/zsh-history-substring-search" \
+            /usr/share/zsh/plugins/zsh-history-substring-search
+        do
+            if [[ -d "$dir" ]]; then
+                . "$dir/zsh-history-substring-search.zsh"
+                break
+            fi
+        done; unset dir
+
+        HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_FOUND="bg=007,fg=008"
+        export HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_FOUND
+        # }}}
+        ;;
+esac
+
+# {{{ Env Vars
+# TERM
+# Don't do this as it can break zsh highlighting
+# export TERM="screen-256color"
+# But this appears safe
+export TERM="xterm-256color"
+case "$(uname -s)" in
+    "Darwin") ;; # Ignore macOS
+    *) [[ -z $TMUX ]] || export TERM="tmux-256color" ;;
+esac
+
+# Java
+export JAVA_HOME="$(
+    find /usr/lib/jvm -maxdepth 1 \
+    -iregex ".*java-[0-9]+-openjdk.*" -print 2>/dev/null | \
+    sort -k 2.1 -nr -t "-" | head -n 1
+)"
+
+# Editor of choice
+[[ -z $(command -v vim) ]] || export EDITOR="vim"
+
+# GPG
+[[ -z $(command -v tty) ]] || export GPG_TTY="$(tty)"
+
+# Secure perms
+# Don't touch umask EVER
+# [[ -n $(id | grep -s "uid=0") ]] || umask 077
+# Instead do something like:
+# setfacl -m d:u::rwX,g::-,o::- -R "$HOME"
+
+# Less
+export PAGER="less"
+export LESS="-ciMRs"
+if [[ -f "$HOME/.config/less/lessfilter" ]]; then
+    export LESSOPEN="|\"$HOME/.config/less/lessfilter\" %s"
+fi
+
+# Make less more friendly for non-text input files, see lesspipe(1)
+if [[ -n $(command -v lesspipe) ]]; then
+    export LESSOPEN="| lesspipe %s"
+    export LESSCLOSE="lesspipe %s %s"
+fi
+
+# Command args
+
+## grep
+declare -a GREP_ARGS
+if grep --help 2>&1 | grep -iqs "color"; then
+    GREP_ARGS+=("--color=auto")
+fi
+GREP_ARGS+=("-Iis")
+GREP_ARGS+=("--exclude-dir=.bzr")
+GREP_ARGS+=("--exclude-dir=.git")
+GREP_ARGS+=("--exclude-dir=.git-crypt")
+GREP_ARGS+=("--exclude-dir=.svn")
+GREP_COLORS="fn=1;32:ln=0;37:ms=47;1;30:mc=47;1;30:sl=:cx=:bn=:se="
+export GREP_COLORS
+
+## rg
+declare -a RG_ARGS
+RG_ARGS+=("--no-messages")
+RG_ARGS+=("--smart-case")
+RG_ARGS+=("--colors line:fg:white")
+RG_ARGS+=("--colors match:bg:white")
+RG_ARGS+=("--colors match:fg:black")
+RG_ARGS+=("--colors path:fg:green")
+
+# Ruby
+export GEM_HOME="$HOME/.gem/ruby"
+export GEM_PATH="$GEM_HOME/gems"
+[[ -z $(command -v ruby) ]] || mkdir -p "$GEM_HOME"/{bin,gems}
+
+# Go
+if [[ -d "$HOME/.cache/gvm" ]]; then
+    export GOROOT="$HOME/.cache/gvm/use"
+    export PATH="$GOROOT/bin${PATH:+:$PATH}"
+fi
+if [[ -n $(command -v go) ]]; then
+    GOPATH="$(go version)"
+    GOPATH="${GOPATH##go version go}"
+    if [[ -n $GOPATH ]]; then
+        export GOPATH="$HOME/.go/v${GOPATH%% *}"
+        mkdir -p "$GOPATH/bin"
+    fi
+fi
+
+# Perl
+export PERL_LOCAL_LIB_ROOT="$HOME/.cpan/perl5"
+export PERL5LIB="$PERL_LOCAL_LIB_ROOT/lib/perl5"
+export PERL_MB_OPT="--install_base \"$PERL_LOCAL_LIB_ROOT\""
+export PERL_MM_OPT="INSTALL_BASE=\"$PERL_LOCAL_LIB_ROOT\""
+[[ -z $(command -v perl) ]] || mkdir -p "$PERL_LOCAL_LIB_ROOT"
+
+# Fix USER if not defined
+export USER="${USER:-$(id -nu)}"
+
+# Display
+if [[ -z $DISPLAY ]] &&
+   [[ -z $SSH_CONNECTION ]] &&
+   [[ -d /tmp/.X11-unix ]] &&
+   [[ -n $(ls /tmp/.X11-unix) ]]
+then
+    for x in /tmp/.X11-unix/X*; do
+        export DISPLAY=":${x#/tmp/.X11-unix/X}" && break
+    done; unset x
+fi
+# }}}
+
+# {{{ PATH
+# Find dirs that should be in PATH
+unset PTH
+for dir in \
+    "$HOME/bin" "$HOME/.local/bin" \
+    "${GOROOT:-/doesnotexist}/bin" "${GOPATH:-/doesnotexist}/bin" \
+    "$GEM_HOME/bin" "$HOME/.rvm/bin" \
+    "$PERL_LOCAL_LIB_ROOT/bin" \
+    /usr/bin/core_perl /usr/bin/vendor_perl \
+    "$HOME/Android/Sdk/emulator" "$HOME/Android/Sdk/platform-tools" \
+    /usr/local/bin /usr/local/sbin \
+    /usr/bin /usr/sbin \
+    /bin /sbin
+do
+    [[ ! -d "$dir" ]] || PTH="${PTH:+$PTH:}$dir"
+done; unset dir
+
+# Find in PATH but missing from PTH
+while read -r dir; do
+    [[ ! -d "$dir" ]] || PTH="${PTH:+$PTH:}$dir"
+done < <(echo "$PATH" | sed "s/:/\n/g" | grep -Esv "^${PTH//:/$|^}$")
+unset dir
+
+# Set PATH
+[[ -z $PTH ]] || export PATH="$PTH"
+unset PTH
+# }}}
+
+# {{{ Aliases
+alias cp="\cp -i"
+[[ -z $(command -v sudo) ]] || alias f="sudo"
+[[ -z $(command -v grep) ]] || alias grep="\grep \${GREP_ARGS[*]}"
+alias la="ls -A"
+alias ll="ls -hl"
+alias lla="ll -A"
+alias ls="\ls --color=auto -F"
+alias mine="sudo chown -R \$(id -nu):\$(id -gn)"
+alias mv="\mv -i"
+[[ -z $(command -v python2) ]] || alias pip2="python2 -m pip"
+[[ -z $(command -v python3) ]] || alias pip3="python3 -m pip"
+alias q="exit"
+alias r="reset"
+[[ -z $(command -v rg) ]] || alias rg="\rg \${RG_ARGS[*]}"
+[[ -z $(command -v sudo) ]] || alias sume="sudo -Es"
+alias vd="vimdiff"
+alias vi="nvim"
+alias vim="nvim"
+alias which="command -v"
+# }}}
+
+# {{{ Functions
+function devexcuse() {
+    curl -s "http://developerexcuses.com" | \
+        grep --color=never -oPs "<a href.+>\K.+(?=</a>)"
+}
+
+function ipa() {
+    local device
+    local inet
+
+    if [[ -n $(command -v ip) ]]; then
+        if ip 2>&1 | grep -Eq "c\[olor\]"; then
+            ip -c -o "$@" a | grep -sv "mtu" | awk '{print $2,$4}'
+        else
+            ip -o "$@" a | grep -sv "mtu" | awk '{print $2,$4}'
+        fi
+    else
+        while read -r line; do
+            case "$line" in
+                *encap*|*flags*)
+                    device="$(echo "$line" | awk '{print $1}')"
+                    ;;
+                *inet6*addr:*)
+                    inet="$(echo "$line" | awk '{print $3}')"
+                    ;;
+                *inet*) inet="$(echo "$line" | awk '{print $2}')"
+                    ;;
+                *) unset inet
+                    ;;
+            esac
+            [[ -z $inet ]] || echo "$device $inet" | sed "s/addr://"
+        done < <(ifconfig)
+    fi
+}
+
+function ipr() {
+    if [[ -n $(command -v ip) ]]; then
+        if ip 2>&1 | grep -Eq "c\[olor\]"; then
+            ip -c -o "$@" r
+        else
+            ip -o "$@" r
+        fi
+    else
+        (
+            echo "Route Gateway Interface"
+            echo "----- ------- ---------"
+            netstat -nr | awk '!/Routing|Internet|Destination/ {
+                if (NF == 4) {
+                    print $1,$2,$4
+                } else if (NF == 7) {
+                    print $1,$2,$6
+                }
+            }'
+        ) | column -t
+    fi
+}
+
+function iso2usb() {
+    local usage="Usage: iso2usb [-h|--help] <iso> <dev>"
+
+    [[ $# -ne 2 ]] && echo "$usage" && return 1
+    [[ ! -f "$1" ]] && echo "$usage" && return 2
+    [[ ! -b $2 ]] && echo "$usage" && return 3
+
+    sudo dd if="$1" of="$2" bs="4M"
+}
+
+function os() {
+    grep --color=never -ioPs "^NAME\=\"?\K[^\"]+" /etc/os-release
+}
+
+function simplehttp() {
+    local port="${2:-8080}"
+
+    case "${1:--h}" in
+        "-h"|"--help") ;;
+        *)
+            if [[ -z $(command -v "$1") ]]; then
+                echo "$1 is not installed"
+                return
+            fi
+            ;;
+    esac
+
+    case "$1" in
+        "busybox") busybox httpd -f -p "$port" ;;
+        "nginx")
+            mkdir -p /tmp/simplehttp
+            cat >/tmp/simplehttp/nginx.conf <<EOF
+daemon off;
+error_log stderr;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    client_body_temp_path /tmp/simplehttp 1 2;
+    fastcgi_temp_path /tmp/simplehttp 1 2;
+    uwsgi_temp_path /tmp/simplehttp 1 2;
+    scgi_temp_path /tmp/simplehttp 1 2;
+
+    server {
+        access_log /dev/stdout;
+        autoindex on;
+        listen $port;
+        root $(pwd);
+        server_name localhost;
+    }
+}
+
+pid /tmp/simplehttp/nginx.pid;
+worker_processes 1;
+EOF
+
+            nginx -c /tmp/simplehttp/nginx.conf -p /tmp/simplehttp
+            rm -f -r /tmp/simplehttp
+            ;;
+        "perl")
+            plackup -MPlack::App::Directory \
+                -e 'Plack::App::Directory->new(root=>".");' \
+                -p "$port"
+            ;;
+        "php") php -S "0.0.0.0:$port" ;;
+        "python2") python2 -m SimpleHTTPServer "$port" ;;
+        "python3") python3 -m http.server "$port" ;;
+        "ruby") ruby -e httpd -r un -- -p "$port" . ;;
+        "twisted") twistd -n web --listen "tcp:$port" --path . ;;
+        *)
+            echo "Usage: simplehttp <lang> [port]"
+            echo
+            echo "DESCRIPTION"
+            echo -n "    Start an HTTP server using the specified "
+            echo "language and port (default: 8080)."
+            echo
+            echo "OPTIONS"
+            echo "    -h, --help    Display this help message"
+            echo
+            echo "LANGUAGES"
+            [[ -z $(command -v busybox) ]] || echo "    busybox"
+            [[ -z $(command -v nginx) ]] || echo "    nginx"
+            [[ -z $(command -v plackup) ]] || echo "    perl"
+            [[ -z $(command -v php) ]] || echo "    php"
+            [[ -z $(command -v python2) ]] || echo "    python2"
+            [[ -z $(command -v python3) ]] || echo "    python3"
+            [[ -z $(command -v ruby) ]] || echo "    ruby"
+            [[ -z $(command -v python3) ]] || echo "    twisted"
+            ;;
+    esac
+}
+
+function update_grub() {
+    for mkconfig in \
+        grub-mkconfig \
+        grub2-mkconfig
+    do
+        [[ -n $(command -v "$mkconfig") ]] || continue
+        for cfg in \
+            /boot/grub \
+            /boot/grub2
+        do
+            [[ -d "$cfg" ]] || continue
+            sudo "$mkconfig" -o "$cfg/grub.cfg"
+        done
+    done
+}
+# }}}
+
+case "$SHELL" in
+    *"bash")
+        # {{{ Bash completions
+        # Complete gimme function
+        if [[ -n $(command -v apt-cache) ]]; then
+            function _apt_install_complete() {
+                mapfile -t COMPREPLY < <(
+                    apt-cache --no-generate pkgnames "$2"
+                )
+            }
+            complete -F _apt_install_complete gimme
+        elif [[ -n $(command -v brew) ]]; then
+            function _brew_install_complete() {
+                mapfile -t COMPREPLY < <(brew search "$2")
+            }
+            complete -F _brew_install_complete gimme
+        elif [[ -n $(command -v crew) ]]; then
+            function _crew_install_complete() {
+                mapfile -t COMPREPLY < <(
+                    crew search "$2" | awk '{print $1}'
+                )
+            }
+            complete -F _crew_install_complete gimme
+        elif [[ -n $(command -v pacman) ]]; then
+            if [[ -n $(command -v yay) ]]; then
+                function _yay_install_complete() {
+                    mapfile -t COMPREPLY < <(
+                        yay --color=never -Ss "$2" | \
+                        grep -oPs "^[^/]+/\K$2\S*" | sort -u
+                    )
+                }
+                complete -F _yay_install_complete gimme
+            elif [[ -n $(command -v ruaur) ]]; then
+                function _ruaur_install_complete() {
+                    mapfile -t COMPREPLY < <(
+                        ruaur -Ss "$2" --names-only | \
+                        grep -Es "^$2" | sort -u
+                    )
+                }
+                complete -F _ruaur_install_complete gimme
+            else
+                function _pacman_install_complete() {
+                    mapfile -t COMPREPLY < <(
+                        pacman --color=never -Ss "$2" | \
+                        grep -oPs "^[^/]+/\K$2\S*" | sort -u
+                    )
+                }
+                complete -F _pacman_install_complete gimme
+            fi
+        fi
+        # }}}
+        ;;
+    *"zsh")
+        # {{{ Zsh completions
+        for dir in \
+            "$HOME/.config/zsh/plugins/zsh-completions/src" \
+            /usr/share/zsh/plugins/zsh-completions/src \
+            /usr/share/zsh/site-functions
+        do
+            [[ ! -d "$dir" ]] || fpath+=("$dir")
+        done; unset dir
+
+        if [[ $ZSHV -gt 42 ]]; then
+            if [[ -z $(command -v compdef) ]]; then
+                autoload -Uz compinit && compinit -u
+            fi
+        fi
+
+        # Syntax highlighting (must come after all zle -N calls and
+        # compinit)
+        declare -A ZSH_HIGHLIGHT_STYLES
+        ZSH_HIGHLIGHT_STYLES[alias]="fg=blue"
+        ZSH_HIGHLIGHT_STYLES[builtin]="fg=blue"
+        ZSH_HIGHLIGHT_STYLES[command]="fg=blue"
+        ZSH_HIGHLIGHT_STYLES[commandseparator]="fg=green"
+        ZSH_HIGHLIGHT_STYLES[comment]="fg=green,bold"
+        ZSH_HIGHLIGHT_STYLES[dollar-double-quoted-argument]="fg=red,bold"
+        ZSH_HIGHLIGHT_STYLES[dollar-single-quoted-argument]="fg=cyan"
+        ZSH_HIGHLIGHT_STYLES[double-quoted-argument]="fg=red,bold"
+        ZSH_HIGHLIGHT_STYLES[function]="fg=blue"
+        ZSH_HIGHLIGHT_STYLES[hashed-command]="fg=blue"
+        ZSH_HIGHLIGHT_STYLES[precommand]="fg=white,underline"
+        ZSH_HIGHLIGHT_STYLES[reserved-word]="fg=yellow"
+        ZSH_HIGHLIGHT_STYLES[single-quoted-argument]="fg=cyan"
+        ZSH_HIGHLIGHT_STYLES[unknown-token]="fg=red"
+        export ZSH_HIGHLIGHT_STYLES
+        for dir in \
+            "$HOME/.config/zsh/plugins/zsh-syntax-highlighting" \
+            /usr/share/zsh/plugins/zsh-syntax-highlighting \
+            /usr/share/zsh-syntax-highlighting
+        do
+            [[ ! -d "$dir" ]] || . "$dir/zsh-syntax-highlighting.zsh"
+            [[ ! -d "$dir" ]] || break
+        done; unset dir
+
+        # Complete gimme function
+        if [[ -n $(command -v apt-cache) ]]; then
+            function _apt_install_complete() {
+                read -a -r reply <(
+                    apt-cache --no-generate pkgnames "$1"
+                )
+            }
+            compctl -K _apt_install_complete gimme
+        elif [[ -n $(command -v brew) ]]; then
+            function _brew_install_complete() {
+                read -a -r reply <(brew search "$1")
+            }
+            compctl -K _brew_install_complete gimme
+        elif [[ -n $(command -v crew) ]]; then
+            function _crew_install_complete() {
+                read -a -r reply <(
+                    crew search "$1" | awk '{print $1}'
+                )
+            }
+            compctl -K _crew_install_complete gimme
+        elif [[ -n $(command -v pacman) ]]; then
+            if [[ -n $(command -v yay) ]]; then
+                compdef _gnu_generic yay
+                function _yay_install_complete() {
+                    read -a -r reply <(
+                        yay --color=never -Ss "$1" | \
+                        grep -oPs "^[^/]+/\K^\S*"
+                    )
+                }
+                compctl -K _ruaur_install_complete gimme
+            elif [[ -n $(command -v ruaur) ]]; then
+                compdef _gnu_generic ruaur
+                function _ruaur_install_complete() {
+                    read -a -r reply <(ruaur --names-only -Ss "$1")
+                }
+                compctl -K _ruaur_install_complete gimme
+            else
+                function _pacman_install_complete() {
+                    read -a -r reply <(
+                        pacman --color=never -Ss "$1" | \
+                        grep -oPs "^[^/]+/\K^\S*"
+                    )
+                }
+                compctl -K _pacman_install_complete gimme
+            fi
+        fi
+        # }}}
+        ;;
+esac
+
+# {{{ Wrap-up
+# Xterm
+if [[ -n $(command -v xrdb) ]] &&
+   [[ -f "$HOME/.Xresources" ]] &&
+   [[ -z $SSH_CONNECTION ]]
+then
+    xrdb -load "$HOME/.Xresources" 2>/dev/null
+fi
+
+if [[ -f "$HOME/.config/shell/prompt" ]]; then
+    . "$HOME/.config/shell/prompt"
+fi
+if [[ -f "$HOME/.config/shell/ptheme" ]]; then
+    . "$HOME/.config/shell/ptheme"
+fi
+if [[ -f "$HOME/.config/shell/security" ]]; then
+    . "$HOME/.config/shell/security"
+fi
+# }}}

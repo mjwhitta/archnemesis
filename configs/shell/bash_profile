@@ -1,0 +1,6 @@
+# shellcheck disable=SC1091 shell=bash
+
+# If not running interactively, don't do anything
+[[ $- == *i* ]] || return
+
+[[ -z $BASH ]] || [[ ! -f "$HOME/.bashrc" ]] || . "$HOME/.bashrc"

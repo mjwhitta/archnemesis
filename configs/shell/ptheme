@@ -1,0 +1,82 @@
+# shellcheck disable=SC2139 shell=bash
+
+# If not running interactively, don't do anything
+[[ $- == *i* ]] || return
+
+unalias ptheme 2>/dev/null
+case "$0" in
+    *"bash"|*"zsh")
+        alias ptheme="source $HOME/.config/shell/ptheme"
+        ;;
+    "/"*) alias ptheme="source $0" ;;
+    *) alias ptheme="source \$(pwd)/$0" ;;
+esac
+
+case "$1" in
+    "") ;;
+    "ls")
+        cat <<EOF
+dracula
+none
+simple
+simple+
+solarized
+solarized_dark
+solarized_light
+EOF
+        ;;
+    *)
+        mkdir -p "$HOME/.config"
+        echo "$1" >"$HOME/.config/ptheme"
+        ;;
+esac
+
+declare -a NEMESIS_PROMPT
+
+case "$(cat "$HOME/.config/ptheme" 2>/dev/null)" in
+    "dracula")
+        export NEMESIS_PROMPT=(
+            "host;light_magenta;light_black;remote;light_cyan;light_black;root;light_red;light_black"
+            "date;black;light_magenta"
+            "vi_cmd;black;light_cyan;vi_ins;black;light_green;vi_rep;black;light_red"
+            "newline"
+            "exit;black;light_red" #;emotes;white;green"
+            "git;black;white"
+            "venv;black;light_yellow"
+            "cwd;light_magenta;black" #;fill"
+            "newline"
+            "prompt;light_magenta;black"
+        )
+        ;;
+    "simple") export NEMESIS_PROMPT=("simple") ;;
+    "simple+") export NEMESIS_PROMPT=("simple+") ;;
+    "solarized"|"solarized_dark")
+        export NEMESIS_PROMPT=(
+            "host;white;blue;remote;white;cyan;root;white;red"
+            "date;white;light_green"
+            "vi_cmd;white;light_magenta;vi_ins;white;green;vi_rep;white;red"
+            "newline"
+            "exit;white;red" #;emotes;white;green"
+            "git;black;white"
+            "venv;white;light_red"
+            "cwd;white;light_black" #;fill"
+            "newline"
+            "prompt;white;light_black"
+        )
+        ;;
+    "solarized_light")
+        export NEMESIS_PROMPT=(
+            "host;white;blue;remote;white;cyan;root;white;red"
+            "date;white;light_green"
+            "vi_cmd;white;light_magenta;vi_ins;white;green;vi_rep;white;red"
+            "newline"
+            "exit;white;red" #;emotes;white;green"
+            "git;white;black"
+            "venv;white;light_red"
+            "cwd;black;light_white" #;fill"
+            "newline"
+            "prompt;black;light_white"
+        )
+        ;;
+    "none"|*) unset NEMESIS_PROMPT ;;
+esac

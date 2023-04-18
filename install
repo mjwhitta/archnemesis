@@ -1,0 +1,1033 @@
+#!/usr/bin/env bash
+
+# shellcheck disable=SC2155
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+## Installer functions
+
+# Return an array line by line
+array() { json_get "$1[]"; }
+
+# Return true or empty string
+boolean() {
+    local tmp="$(var "$1")"
+
+    # I can only anticipate so much here
+    case "${tmp,,}" in
+        "enable") echo "true" ;;
+        "on") echo "true" ;;
+        "true") echo "true" ;;
+        "y"|"yes") echo "true" ;;
+    esac
+}
+
+# Get value from json and replace placeholders with variable values
+json_get() {
+    local default
+    local new
+
+    while read -r line; do
+        [[ $line != "null" ]] || continue
+
+        while read -r replace; do
+            new="${replace#\{\{\{}"
+            new="${new%\}\}\}}"
+            default="${new##*:-}"
+            new="$(var "${new%:-*}")"
+            [[ -n $new ]] || new="$default"
+            line="${line//$replace/$new}"
+        done < <(echo "$line" | grep -oPs "\{\{\{[^}]+\}\}\}")
+        unset replace
+
+        echo "$line"
+    done < <(jq -c -M -r -S "$1" 2>/dev/null "metadata.json")
+    unset line
+}
+
+# Get a list of keys for a hash
+hash_keys() { json_get "$1|keys[]"; }
+
+# Run the command in the chroot
+run_in_chroot() {
+    cat >/mnt/chroot_cmd <<EOF
+#!/usr/bin/env bash
+$1
+exit \$?
+EOF
+    chmod 777 /mnt/chroot_cmd
+
+    arch-chroot ${2:+-u $2} /mnt /chroot_cmd || errx "$?" "$1"
+
+    rm -f /mnt/chroot_cmd
+}
+
+# Get one of the variables
+var() { jq -c -M -r -S ".$1" "$cfg" 2>/dev/null | sed "s/null//g"; }
+
+## Configuration functions
+
+beginners_guide() {
+    local hostname="$(var hostname)"
+    local loadkeys="$(var loadkeys)"
+    local tz="$(var timezone)"
+
+    hostname="${hostname:-nemesis}"
+    loadkeys="${loadkeys:-us}"
+    tz="${tz:-America/Indiana/Indianapolis}"
+
+    info "Selecting keyboard layout"
+    loadkeys "$loadkeys" || errx "$?" "failed to set keyboard layout"
+
+    info "Updating system clock"
+    timedatectl set-ntp true || errx "$?" "failed to update time"
+
+    case "$boot_mode" in
+        "BIOS") partition_and_format_disk_bios "$dev" ;;
+        "UEFI") partition_and_format_disk_uefi "$dev" ;;
+    esac
+
+    info "Mounting file systems"
+    case "$boot_mode" in
+        "BIOS")
+            case "$dev" in
+                "/dev/nvme"*)
+                    subinfo "Mounting ${dev}p1 as /"
+                    mount "${dev}p1" /mnt || \
+                        errx "$?" "failed to mount / to /mnt"
+                    ;;
+                *)
+                    subinfo "Mounting ${dev}1 as /"
+                    mount "${dev}1" /mnt || \
+                        errx "$?" "failed to mount / to /mnt"
+                    ;;
+            esac
+            ;;
+        "UEFI")
+            case "$dev" in
+                "/dev/nvme"*)
+                    subinfo "Mounting ${dev}p2 as /"
+                    mount "${dev}p2" /mnt || \
+                        errx "$?" "failed to mount / to /mnt"
+                    ;;
+                *)
+                    subinfo "Mounting ${dev}2 as /"
+                    mount "${dev}2" /mnt || \
+                        errx "$?" "failed to mount / to /mnt"
+                    ;;
+            esac
+
+            case "$dev" in
+                "/dev/nvme"*)
+                    subinfo "Mounting ${dev}p1 as /boot"
+                    mkdir -p /mnt/boot
+                    mount "${dev}p1" /mnt/boot || \
+                        errx "$?" "failed to mount /boot to /mnt/boot"
+                    ;;
+                *)
+                    subinfo "Mounting ${dev}1 as /boot"
+                    mkdir -p /mnt/boot
+                    mount "${dev}1" /mnt/boot || \
+                        errx "$?" "failed to mount /boot to /mnt/boot"
+                    ;;
+            esac
+            ;;
+    esac
+
+    info "Configuring mirrors"
+    select_mirrors
+
+    info "Installing base packages and kernel"
+    pacstrap /mnt base base-devel linux linux-firmware || \
+        errx "$?" "failed to bootstrap system"
+
+    info "Configuring the system"
+
+    info "Generating fstab"
+    genfstab -L /mnt | sed -r "s/\s+/ /g" >/mnt/etc/fstab || \
+        errx "$?" "failed to generate /etc/fstab"
+
+    info "Selecting the time zone"
+    run_in_chroot "ln -f -s /usr/share/zoneinfo/$tz /etc/localtime"
+    run_in_chroot "hwclock --systohc"
+
+    select_locale
+
+    info "Saving the keyboard layout"
+    echo "KEYMAP=$loadkeys" >/mnt/etc/vconsole.conf
+
+    info "Saving hostname"
+    echo "$hostname" >/mnt/etc/hostname
+
+    configure_enable_networking
+    install_configure_enable_grub "$dev"
+}
+
+configure_archnemesis() {
+    local assets
+    local bin
+    local git
+    local hostname="$(var hostname)"
+    local idx
+    local name="$(var user.name)"
+    local -a pkgs
+    local repo
+    local session="$(var session)"
+    local theme="$(var theme)"
+    local ucfg
+    local uhome
+
+    hostname="${hostname:-nemesis}"
+    name="${name:-nemesis}"
+    session="${session:-lxqt}"
+    theme="${theme:-dracula}"
+
+    info "Finalizing ArchNemesis"
+
+    # ArTTY
+    subinfo "Installing ArTTY"
+    git="https://github.com"
+    repo="mjwhitta/artty/releases"
+    assets="$(
+        curl -kLs "$git/$repo" 2>/dev/null | \
+        grep -im 1 -oPs "expanded_assets/[^\"]+"
+    )"
+    bin="$(
+        curl -kLs "$git/$repo/$assets" | \
+        grep -im 1 -oPs "href\=..\K.+linux.+upx\.arTTY"
+    )"
+
+    curl -kLo /mnt/usr/local/bin/arTTY "$git/$bin"
+    chmod 755 /mnt/usr/local/bin/arTTY
+
+    # Install and enable ClamAV
+    subinfo "Installing ClamAV"
+    run_in_chroot "pacman --needed --noconfirm -S clamav"
+    run_in_chroot "systemctl enable clamav-daemon"
+    run_in_chroot "systemctl enable clamav-freshclam"
+
+    # Install and enable Docker
+    subinfo "Installing Docker"
+    pkgs+=("docker")
+    pkgs+=("docker-buildx")
+    pkgs+=("docker-compose")
+    run_in_chroot "pacman --needed --noconfirm -S ${pkgs[*]}"
+    run_in_chroot "systemctl enable docker"
+
+    # Install htop
+    subinfo "Installing htop"
+    run_in_chroot "pacman --needed --noconfirm -S htop"
+
+    if [[ -n $(boolean graphical) ]]; then
+        # Install rofi and terminator
+        subinfo "Installing rofi and terminator"
+        run_in_chroot "pacman --needed --noconfirm -S rofi terminator"
+
+        # Setup scripts
+        cp -f ./scripts/bin/* /mnt/usr/local/bin/
+        ln -f -s fw /mnt/usr/local/bin/fw6
+        if [[ -n $(boolean nemesis_tools) ]]; then
+            cp -f ./scripts/security/* /mnt/usr/local/bin/
+        fi
+        chmod 755 /mnt/usr/local/bin/*
+        run_in_chroot "chown $name:$name /usr/local/bin/*"
+
+        # Setup default terminal emulator
+        subinfo "Creating symlink to terminator"
+        run_in_chroot \
+            "ln -f -s /usr/bin/terminator /usr/local/bin/term"
+
+        # Wallpapers
+        subinfo "Installing the best wallpapers"
+        rm -f -r /mnt/usr/share/lnxpcs
+        git clone https://github.com/mjwhitta/lnxpcs.git \
+            /mnt/usr/share/lnxpcs
+        chmod -R u=rwX,go=rX /mnt/usr/share/lnxpcs
+        run_in_chroot "chown -R $name:$name /usr/share/lnxpcs"
+    fi
+
+    # Loop thru users and setup configs
+    for idx in $(seq 1 "$(json_get ".users|length")"); do
+        ((idx -= 1)) # 0-indexed
+
+        name="$(json_get ".users[$idx].name")"
+        [[ -n $name ]] || continue
+
+        case "$name" in
+            "root") uhome="/mnt/root" ;;
+            *) uhome="/mnt/home/$name" ;;
+        esac
+        ucfg="$uhome/.config"
+
+        # ArTTY
+        subinfo "Configuring ArTTY for $name"
+        run_in_chroot "/usr/local/bin/arTTY -u" "$name"
+        run_in_chroot \
+            "/usr/local/bin/arTTY -c --fit -p -s --save linux-arch" \
+            "$name"
+
+        # bash/zsh
+        subinfo "Configuring bash/zsh for $name"
+        rm -f -r "$ucfg/shell"
+        cp -r ./configs/shell "$ucfg/"
+        mv "$ucfg/shell/bash_profile" "$uhome/.bash_profile"
+        mv "$ucfg/shell/bashrc" "$uhome/.bashrc"
+        ln -f -s .bash_profile "$uhome/.zprofile"
+        ln -f -s .bashrc "$uhome/.zshrc"
+        echo "$theme" >"$ucfg/ptheme"
+
+        # htop
+        subinfo "Configuring htop for $name"
+        mkdir -p "$ucfg/htop"
+        cp -f ./configs/htoprc "$ucfg/htop/"
+
+        # less
+        subinfo "Configuring less for $name"
+        rm -f -r "$ucfg/less"
+        cp -r ./configs/less "$ucfg/"
+
+        # neovim
+        subinfo "Configuring neovim for $name"
+        mkdir -p "$ucfg/nvim"
+        cp -f ./configs/init.vim "$ucfg/nvim/"
+        touch "$uhome/.vimrc"
+
+        # python
+        mkdir -p "$ucfg/pip"
+        cp -f ./configs/pip.conf "$ucfg/pip/"
+
+        # ranger
+        cp -r ./configs/ranger "$ucfg/"
+
+        # ruby
+        cp -f ./configs/gemrc "$uhome/.gemrc"
+
+        # snapwin
+        if [[ -n $(boolean graphical) ]]; then
+            subinfo "Configuring snapwin for $name"
+            rm -f -r "$ucfg/snapwin"
+            cp -r ./configs/snapwin "$ucfg/"
+        fi
+
+        # top
+        subinfo "Configuring top for $name"
+        cp -f ./configs/toprc "$uhome/.toprc"
+
+        if [[ -n $(boolean graphical) ]]; then
+            # pcmanfm-qt
+            subinfo "Configuring pcmanfm-qt for $name"
+            mkdir -p "$ucfg/pcmanfm-qt"
+            rm -f -r "$ucfg/pcmanfm-qt/default"
+            cp -r ./configs/pcmanfm-qt "$ucfg/pcmanfm-qt/default"
+            ln -f -s "$theme.conf" \
+                "$ucfg/pcmanfm-qt/default/settings.conf"
+
+            # rofi
+            subinfo "Configuring rofi for $name"
+            rm -f -r "$ucfg/rofi"
+            cp -r ./configs/rofi "$ucfg/"
+            ln -f -s "$theme.rasi" "$ucfg/rofi/config.rasi"
+
+            # Configure requested session
+            case "$session" in
+                "lxqt")
+                    # LXQT
+                    subinfo "Configuring lxqt for $name"
+                    rm -f -r "$ucfg/lxqt"
+                    cp -r ./configs/lxqt "$ucfg/"
+                    ln -f -s "$theme/lxqt.conf" "$ucfg/lxqt/lxqt.conf"
+                    ln -f -s "$theme/panel.conf" \
+                        "$ucfg/lxqt/panel.conf"
+
+                    # openbox
+                    subinfo "Configuring openbox for $name"
+                    mkdir -p "$ucfg/openbox"
+                    cp -f "$ucfg/lxqt/lxqt-rc.xml" \
+                        "$ucfg/openbox/rc.xml"
+
+                    # xpofile
+                    subinfo "Configuring xprofile for $name"
+                    ln -f -s .config/lxqt/xprofile "$uhome/.xprofile"
+                    ;;
+            esac
+
+            # terminator
+            subinfo "Configuring terminator for $name"
+            rm -f -r "$ucfg/terminator"
+            mkdir -p "$ucfg/terminator"
+            sed "s/PALETTE/$(cat "./configs/terminator/$theme")/" \
+                ./configs/terminator/config >"$ucfg/terminator/config"
+
+            # Xresources
+            subinfo "Configuring Xresources for $name"
+            rm -f -r "$ucfg/x11"
+            cp -r ./configs/x11 "$ucfg/"
+            ln -f -s ".config/x11/Xresources.$theme" \
+                "$uhome/.Xresources"
+
+            # xscreensaver
+            subinfo "Configuring xscreensaver for $name"
+            ln -f -s .config/x11/xscreensaver "$uhome/.xscreensaver"
+        fi
+
+        # Fix user's home directory permissions
+        fix_permissions "$name"
+    done; unset idx
+
+    # Setup etckeeper
+    info "Installing etckeeper"
+    run_in_chroot "pacman --needed --noconfirm -S etckeeper"
+
+    info "Configuring etckeeper"
+    run_in_chroot "etckeeper init"
+    run_in_chroot "etckeeper vcs config user.email \"root@$hostname\""
+    run_in_chroot "etckeeper vcs config user.name root"
+    run_in_chroot "etckeeper vcs commit -am \"Initial commit\""
+}
+
+configure_enable_networking() {
+    info "Configuring and enabling networking"
+
+    # Configure dhcp
+    array ".network.dhcp_network" \
+        >/mnt/etc/systemd/network/dhcp.network
+
+    # Symlink /etc/resolv.conf
+    ln -f -s /run/systemd/resolve/resolv.conf /mnt/etc/
+
+    # Enable services
+    run_in_chroot "systemctl enable systemd-networkd"
+    run_in_chroot "systemctl enable systemd-resolved"
+}
+
+create_and_configure_users() {
+    local crypt
+    local group
+    local groups
+    local hostname="$(var hostname)"
+    local idx
+    local name
+    local passwd
+    local uhome
+
+    hostname="${hostname:-nemesis}"
+
+    info "Creating and configuring user"
+
+    # Loop thru users and create them
+    for idx in $(seq 1 "$(json_get ".users|length")"); do
+        ((idx -= 1)) # 0-indexed
+
+        groups="$(json_get ".users[$idx].groups")"
+        name="$(json_get ".users[$idx].name")"
+        passwd="$(json_get ".users[$idx].password")"
+        shell="$(json_get ".users[$idx].shell")"
+
+        [[ -n $name ]] || continue
+
+        # Create password hash, if specified
+        if [[ -n $passwd ]]; then
+            crypt="$(perl -e "print crypt(\"$passwd\", \"$RANDOM\")")"
+        fi
+
+        # Create user
+        case "$name" in
+            "root")
+                uhome="/mnt/root"
+                if [[ -n $passwd ]]; then
+                    subinfo "Updating root password"
+                    run_in_chroot "usermod -p \"$crypt\" $name"
+                fi
+                ;;
+            *)
+                uhome="/mnt/home/$name"
+                if [[ -n $passwd ]]; then
+                    subinfo "Creating new user: $name"
+                    run_in_chroot "useradd -mp \"$crypt\" -U $name"
+                fi
+
+                # Create optional password-less sudo
+                cat >"/mnt/etc/sudoers.d/$name" <<EOF
+#$name ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+                chmod 600 "/mnt/etc/sudoers.d/$name"
+                ;;
+        esac
+
+        # Add user to groups
+        if [[ -n $groups ]]; then
+            while read -r group; do
+                subinfo "Creating new group: $group"
+                run_in_chroot "groupadd -f $group"
+            done < <(echo -e "${groups//,/\\n}"); unset group
+
+            subinfo "Adding $name to groups: $groups"
+            run_in_chroot "usermod -aG \"$groups\" $name"
+        fi
+
+        # Configure shell
+        if [[ -n $shell ]]; then
+            run_in_chroot "usermod -s $shell $name"
+        fi
+
+        # Configure initial ~/.ssh
+        subinfo "Configuring ssh for $name"
+        mkdir -p "$uhome/.ssh"
+
+        # authorized_keys
+        array ".users[$idx].authorized_keys" \
+            >"$uhome/.ssh/authorized_keys"
+
+        # config
+        array ".users[$idx].ssh_config" >"$uhome/.ssh/config"
+
+        case "$name" in
+            "root") continue ;;
+        esac
+
+        # SSH key
+        ssh-keygen -C "$hostname" -f "$uhome/.ssh/$hostname" -N "" \
+            -q -t ed25519 || \
+            errx "$?" "failed to generate SSH key"
+
+        # Fix user's home directory permissions
+        fix_permissions "$name"
+    done; unset idx
+}
+
+customize() {
+    local ans
+
+    info "User customizations"
+
+    while :; do
+        read -p "Open shell for final customizations? (y/N) " -r ans
+        case "${ans,,}" in
+            ""|"n"|"no") break ;;
+            "y"|"yes") arch-chroot /mnt; break ;;
+        esac
+    done
+}
+
+enable_multilib() {
+    local file="/mnt/etc/pacman.conf"
+    local inc
+
+    info "Enabling multilib in pacman.conf"
+
+    # Return if already uncommented
+    grep -Pqs "#\[multilib\]" "$file" || return
+
+    # Uncomment out the multilib line
+    inc="/etc/pacman.d/mirrorlist"
+    sed -i -r \
+        -e "s/^#(\[multilib\]).*/\\1/" \
+        -e "/^\[multilib\]/!b;n;cInclude = $inc" "$file" || \
+        errx "$?" "failed to configure multilib"
+
+    # Update pacman database
+    subinfo "Refreshing pacman db"
+    run_in_chroot "pacman -Syy"
+}
+
+enable_sudo_for_wheel() {
+    info "Enabling sudo for wheel group"
+    sed -i -r "s/^# *(%wheel ALL\=\(ALL(:ALL)?\) ALL)/\1/g" \
+        /mnt/etc/sudoers
+}
+
+fix_permissions() {
+    local name="$1"
+    local uhome
+
+    subinfo "Fixing permissions for $name's home directory"
+
+    case "$name" in
+        "root") uhome="/root" ;;
+        *) uhome="/home/$name" ;;
+    esac
+
+    run_in_chroot "chown -R \"$name:$name\" \"$uhome\""
+    run_in_chroot "setfacl -m d:u::rwX,g::-,o::- -R \"$uhome\""
+}
+
+install_configure_enable_grub() {
+    local -a cmd
+    local k
+    local v
+
+    # Install grub
+    info "Installing grub"
+    run_in_chroot "pacman --needed --noconfirm -S grub"
+
+    # Update /etc/default/grub
+    subinfo "Updating /etc/default/grub"
+    while read -r k; do
+        v="$(json_get ".grub.$k")"
+        [[ -n $v ]] || continue
+        sed -i -r "s|^($k)\\=.*|\\1=$v|" /mnt/etc/default/grub || \
+            errx "$?" "failed to set grub option $k"
+    done < <(hash_keys ".grub"); unset k
+
+    # Install bootloader
+    case "$boot_mode" in
+        "BIOS")
+            subinfo "Installing bootloader for $boot_mode"
+            run_in_chroot "grub-install --target=i386-pc $1"
+            ;;
+        "UEFI")
+            info "Installing efibootmgr"
+            run_in_chroot "pacman --needed --noconfirm -S efibootmgr"
+
+            subinfo "Installing bootloader for $boot_mode"
+            cmd=(
+                "grub-install"
+                "--efi-directory=/boot"
+                "--removable"
+                "--target=x86_64-efi"
+            )
+            run_in_chroot "${cmd[*]}"
+            ;;
+    esac
+
+    # Configure grub
+    subinfo "Generating GRUB config"
+    run_in_chroot "grub-mkconfig -o /boot/grub/grub.cfg"
+}
+
+install_configure_enable_iptables() {
+    local fw
+
+    # Install iptables
+    info "Installing iptables"
+    run_in_chroot "pacman --needed --noconfirm -S iptables"
+
+    # Create rules files
+    subinfo "Configuring iptables"
+    for fw in iptables ip6tables; do
+        array ".iptables.${fw}_rules" >/mnt/etc/iptables/${fw}.rules
+    done; unset fw
+
+    # Fix permissions
+    chmod 644 /mnt/etc/iptables/{iptables,ip6tables}.rules
+
+    # Enable services
+    subinfo "Enabling iptables"
+    run_in_chroot "systemctl enable {ip6tables,iptables}"
+}
+
+install_configure_enable_lxqt_and_sddm() {
+    # Install SDDM
+    info "Installing LXQT and SDDM"
+    run_in_chroot "pacman --needed --noconfirm -S lxqt openbox sddm"
+
+    # Configure SDDM
+    subinfo "Configuring SDDM"
+    mkdir -p /mnt/etc/sddm.conf.d
+    array ".sddm.sddm_conf" >/mnt/etc/sddm.conf.d/default.conf
+
+    # Enable service
+    subinfo "Enabling SDDM"
+    run_in_chroot "systemctl enable sddm"
+}
+
+install_configure_enable_ssh() {
+    local hostname
+    local k
+    local v
+
+    # Install SSH
+    info "Installing openssh"
+    run_in_chroot "pacman --needed --noconfirm -S openssh"
+
+    # Update sshd_config
+    subinfo "Configuring sshd"
+    while read -r k; do
+        v="$(json_get ".ssh.sshd_config.$k")"
+        [[ -n $v ]] || continue
+        sed -i -r "s|^#?($k) .*|\\1 $v|" /mnt/etc/ssh/sshd_config || \
+            errx "$?" "failed to set ssh option $k"
+    done < <(hash_keys ".ssh.sshd_config"); unset k
+
+    # Enable service
+    subinfo "Enabling sshd"
+    run_in_chroot "systemctl enable sshd"
+}
+
+install_enable_networkmanager() {
+    local -a pkgs
+
+    # Install NetworkManager
+    info "Installing NetworkManager"
+    pkgs=(
+        "network-manager-applet"
+        "networkmanager"
+        "networkmanager-openconnect"
+        "networkmanager-openvpn"
+    )
+    run_in_chroot "pacman --needed --noconfirm -S ${pkgs[*]}"
+
+    # Enable service
+    subinfo "Enabling NetworkManager"
+    run_in_chroot "systemctl enable NetworkManager"
+}
+
+install_packages() {
+    local pkg
+    local -a pkgs
+
+    info "Installing packages"
+
+    # Install packages with pacman
+    while read -r pkg; do
+        pkgs+=("$pkg")
+    done < <(array ".packages.default"); unset pkg
+
+    if [[ -n $(boolean graphical) ]]; then
+        while read -r pkg; do
+            pkgs+=("$pkg")
+        done < <(array ".packages.graphical"); unset pkg
+    fi
+
+    if [[ -n $(boolean nemesis_tools) ]]; then
+        while read -r pkg; do
+            pkgs+=("$pkg")
+        done < <(array ".packages.nemesis_tools"); unset pkg
+    fi
+
+    # Will need git for yay-bin
+    run_in_chroot "pacman --needed --noconfirm -S git ${pkgs[*]}"
+
+    info "Installing yay-bin from AUR"
+
+    # Install yay-bin
+    run_in_chroot \
+        "cd /tmp && \
+        sudo -u nobody git clone \
+            https://aur.archlinux.org/yay-bin.git && \
+        cd ./yay-bin && \
+        sudo -u nobody makepkg -c --needed -r -s && \
+        pacman --noconfirm -U ./*.zst"
+    run_in_chroot "yay --editmenu --nodiffmenu --save"
+}
+
+install_packages_aur() {
+    local pkg
+    local -a pkgs
+
+    info "Installing user requested AUR packages"
+
+    # Install AUR packages with RuAUR
+    while read -r pkg; do
+        pkgs+=("$pkg")
+    done < <(array ".packages.aur.default"); unset pkg
+
+    if [[ -n $(boolean graphical) ]]; then
+        while read -r pkg; do
+            pkgs+=("$pkg")
+        done < <(array ".packages.aur.gui"); unset pkg
+    fi
+
+    if [[ -n $(boolean nemesis_tools) ]]; then
+        while read -r pkg; do
+            pkgs+=("$pkg")
+        done < <(array ".packages.aur.nemesis_tools"); unset pkg
+    fi
+
+    if [[ ${#pkgs[@]} -gt 0 ]]; then
+        run_in_chroot "yay --needed --noconfirm -S ${pkgs[*]}"
+    fi
+}
+
+partition_and_format_disk_bios() {
+    local part
+    local tmp
+
+    info "Partitioning and formatting disk for BIOS"
+
+    # Wipe all signatures
+    while read -r part; do
+        subinfo "Wiping signatures for $part"
+        wipefs --all --force "$part" || \
+            errx "$?" "failed to wipe signatures"
+    done < <(lsblk -lp "$1" | awk '!/NAME/ {print $1}' | sort -r)
+    unset part
+
+    # Single bootable partition (ext4)
+    subinfo "Partitioning"
+    sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
+        o  # clear the in memory partition table
+        n  # new partition
+        p  # primary partition
+        1  # partition 1
+           # default - start at beginning of disk
+           # default - extend partition to end of disk
+        a  # make a partition bootable
+        p  # print the in-memory partition table
+        w  # write the partition table and exit
+EOF
+    tmp="$?"
+    [[ $tmp -eq 0 ]] || errx "$tmp" "failed to partition"
+
+    subinfo "Formatting as ext4"
+    case "$1" in
+        "/dev/nvme"*)
+            mkfs.ext4 "${1}p1" || \
+                errx "$?" "failed to format ${1}p1 as ext4"
+            ;;
+        *)
+            mkfs.ext4 "${1}1" || \
+                errx "$?" "failed to format ${1}1 as ext4"
+            ;;
+    esac
+}
+
+partition_and_format_disk_uefi() {
+    local part
+    local tmp
+
+    info "Partitioning and formatting disk for UEFI"
+
+    # Wipe all signatures
+    while read -r part; do
+        subinfo "Wiping signatures for $part"
+        wipefs --all --force "$part" || \
+            errx "$?" "failed to wipe signatures"
+    done < <(lsblk -lp "$1" | awk '!/NAME/ {print $1}' | sort -r)
+    unset part
+
+    # A small, bootable partition (EFI) and a larger partition (ext4)
+    subinfo "Partitioning"
+    sed -e "s/\s*\([\+0-9a-zA-Z]*\).*/\1/" <<EOF | fdisk "$1"
+        g     # clear the in memory partition table
+        n     # new partition
+        1     # partition 1
+              # default - start at beginning of disk
+        +256M # 256M UEFI partition
+        t     # change partition type
+        1     # EFI system
+        n     # new partition
+        2     # partition 2
+              # default - start after UEFI partition
+              # default - extend partition to end of disk
+        p     # print the in-memory partition table
+        w     # write the partition table and exit
+EOF
+    tmp="$?"
+    [[ $tmp -eq 0 ]] || errx "$tmp" "failed to partition"
+
+    subinfo "Formatting as fat32 and ext4"
+    case "$1" in
+        "/dev/nvme"*)
+            mkfs.fat "${1}p1" || \
+                errx "$?" "failed to format ${1}p1 as fat32"
+
+            mkfs.ext4 "${1}p2" || \
+                errx "$?" "failed to format ${1}p2 as ext4"
+            ;;
+        *)
+            mkfs.fat "${1}1" || \
+                errx "$?" "failed to format ${1}1 as fat32"
+
+            mkfs.ext4 "${1}2" || \
+                errx "$?" "failed to format ${1}2 as fat32"
+            ;;
+    esac
+}
+
+select_locale() {
+    local locale="$(var locale)"
+
+    locale="${locale:-en_US}"
+
+    info "Selecting $locale for locale"
+
+    # Uncomment preferred locale
+    sed -i -r "s/^#$locale/$locale/" /mnt/etc/locale.gen || \
+        errx "$?" "failed to set locale"
+
+    # Configure locale
+    run_in_chroot "locale-gen"
+    echo "LANG=$locale.UTF-8" >/mnt/etc/locale.conf
+}
+
+select_mirrors() {
+    local mirrors="$(var mirrors)"
+    local query="protocol=https&use_mirror_status=on"
+    local url="https://archlinux.org/mirrorlist"
+
+    mirrors="${mirrors:-us}"
+
+    # Get preferred mirrors
+    subinfo "Selecting 5 closest mirrors for ${mirrors^^}"
+    curl -s "$url/?country=${mirrors^^}&$query" | \
+        sed -e "s/^#Server/Server/" -e "/^#/d" | \
+        rankmirrors -n 5 - | tee /etc/pacman.d/mirrorlist.keep || \
+        errx "$?" "failed to select mirrors"
+
+    # Replace mirrors with preferred mirrors
+    mv -f /etc/pacman.d/mirrorlist.keep /etc/pacman.d/mirrorlist
+}
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS] [dev]
+
+DESCRIPTION
+    Install ArchNemesis (Arch plus some sane set of offsec tools).
+    Providing the install device/location is optional. If you don't
+    provided one, you will be prompted.
+
+OPTIONS
+    -h, --help        Display this help message
+        --no-color    Disable colorized output
+
+EOF
+    exit "$1"
+}
+
+declare -a args
+unset dev help
+cfg="nemesis.cfg"
+color="true"
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-h"|"--help") help="true" ;;
+        "--no-color") unset color ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+# deps+=("")
+check_deps
+
+# Check for valid params
+[[ $# -le 1 ]] || usage 1
+
+# Only run on Arch Linux
+case "$(grep -oPs "^ID\=\K.+" /etc/os-release)$(cat /etc/hostname)" in
+    "archarchiso") ;;
+    *) errx 2 "This isn't an Arch Linux ISO" ;;
+esac
+
+# Run from root of repo
+case "$0" in
+    "./install") ;;
+    *) errx 3 "Run from repo root" ;;
+esac
+
+[[ $# -eq 0 ]] || dev="$1"
+if [[ -z $dev ]]; then
+    declare -a devs
+    while read -r dev; do
+        devs+=("$dev")
+    done < <(lsblk -lp | awk '!/NAME/ {print $1}'); unset dev
+    while :; do
+        clear && lsblk -lp && echo
+        read -p "Please enter target device: " -r dev
+        [[ -n $dev ]] || continue
+        valid="$(echo " ${devs[*]} " | grep -Ps "\s$dev\s")"
+        [[ -z $valid ]] || break
+    done
+fi
+
+# Main
+
+info "Checking internet connection..."
+tmp="$(ping -c 1 8.8.8.8 | grep -s "0% packet loss")"
+[[ -n $tmp ]] || errx 4 "No internet"
+info "Success"
+
+info "Installing dependencies..."
+pacman --noconfirm -Syy
+pacman --needed --noconfirm -S jq pacman-contrib perl
+info "Ready"
+
+info "Validating JSON config..."
+for i in "$cfg" metadata.json; do
+    jq -c -M -r -S "." "$i" &>/dev/null || errx 5 "Invalid JSON"
+done; unset i
+case "$(var session)" in
+    ""|"lxqt") ;;
+    *) errx 5 "Invalid session" ;;
+esac
+case "$(var theme)" in
+    ""|"dracula"|"solarized") ;;
+    *) errx 5 "Invalid theme" ;;
+esac
+info "Success"
+
+mounted="$(mount | grep -oPs "${dev}[0-9p]*")"
+[[ -z $mounted ]] || umount -R /mnt
+mounted="$(mount | grep -oPs "${dev}[0-9p]*")"
+[[ -z $mounted ]] || errx 6 "Device already mounted"
+
+boot_mode="BIOS"
+[[ ! -d /sys/firmware/efi/efivars ]] || boot_mode="UEFI"
+
+beginners_guide
+install_configure_enable_iptables
+enable_sudo_for_wheel
+install_configure_enable_ssh
+
+if [[ -n $(boolean graphical) ]]; then
+    install_enable_networkmanager
+    case "$(var session)" in
+        ""|"lxqt") install_configure_enable_lxqt_and_sddm ;;
+    esac
+fi
+
+enable_multilib
+install_packages
+create_and_configure_users
+configure_archnemesis
+customize
+
+info "Unmounting"
+umount -R /mnt || errx "$?" "failed to unmount chroot"
+
+info "You can now remove installation media and reboot"

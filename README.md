@@ -1,127 +1,49 @@
 # ArchNemesis
 
-<a href="https://www.buymeacoffee.com/mjwhitta">🍪 Buy me a cookie</a>
+[![Yum](https://img.shields.io/badge/-Buy%20me%20a%20cookie-blue?labelColor=grey&logo=cookiecutter&style=for-the-badge)](https://www.buymeacoffee.com/mjwhitta)
 
-I like Arch. So much so, I created my own custom PT/RT install using
-it. Can I call this a distro?
+I like Arch. So much so, I created my own custom Red Team "distro"
+based on it.
 
 ## Quick start
 
-Run one of the following shortcuts if you just want to use the default
-configurations.
-
-**Note:** Default credentials: `nemesis:nemesis`
-
-### Nemesis
-
-From an Arch Installation ISO:
+From an [Arch Installation ISO]:
 
 ```
-$ curl -kLs "https://nemesis.archnemesis.ninja" | bash
+$ curl -Ls get.archnemesis.ninja | bash
+$ cd archnemesis
+$ vim ./nemesis.cfg
 ```
 
-### CLI only
+Modify `nemesis.cfg` as needed:
 
-From an Arch Installation ISO:
+- Change hostname
+- Change keyboard layout
+- Change pacman mirrors location
+- Change session
+- Change ssh port
+- Change theme
+- Change timezone
+- Change user
+    - Add authorized key
+    - Change password
+    - Change username
+
+**Note:** You can alternatively modify the `nemesis.cfg` elsewhere and
+just use `curl` to grab it before installing.
 
 ```
-$ curl -kLs "https://cli.archnemesis.ninja" | bash
+$ ./install -h # READ
+$ ./install [/dev/DEVICE]
+$ reboot
 ```
 
-### Post-install
-
-```
-$ curl -kLs "https://post-install.archnemesis.ninja" | bash
-```
-
-## Installation (from scratch)
-
-### Preperation
-
-1. Download the install script
-
-    ```
-    $ curl -kL -o install.sh -s "https://install.archmemesis.ninja"
-    $ chmod 700 install.sh
-    ```
-
-2. Inspect the script to make sure you feel it's safe
-
-3. Generate a config file by running the script
-
-    ```
-    $ ./install.sh >nemesis.json
-    ```
-
-4. Modify the json file as needed
-
-    - Add authorized_keys
-    - Add users
-    - Change session
-    - Change ssh port
-    - Modify packages
-
-### Installing
-
-1. Get an Arch installation ISO from the [Arch Linux Downloads] page
-    - Currently tested with archlinux-2020.03.01-x86_64.iso
-
-2. Boot it up and wait for the shell prompt
-
-3. Find a way to get `authorized_keys` and/or the config onto the
-   install machine (or prep on this machine)
-
-    a) On a remote machine:
-
-    ```
-    $ ruby -r un -e httpd . -p 8080
-    ```
-
-    b) On the install machine:
-
-    ```
-    $ curl -s "http://remote_machine:8080/authorized_keys"
-    ```
-
-4. Download the install script (unless you prep'd on same machine)
-
-    ```
-    $ curl -kL -o install.sh -s "https://install.archmemesis.ninja"
-    $ chmod 700 install.sh
-    ```
-
-5. Run the script using the config
-
-    ```
-    $ ./install.sh -c nemesis.json /dev/DEVICE
-    ```
-
-## Installation (post-install)
-
-If you have an existing Arch Linux install, you can use the following
-steps to convert to ArchNemesis (mileage may vary). This will simply
-skip most of the configuration and just install any missing packages.
-
-1. Download the install script
-
-    ```
-    $ curl -kL -o install.sh -s "https://install.archmemesis.ninja"
-    $ chmod 700 install.sh
-    ```
-
-2. Inspect the script to make sure you feel it's safe
-
-3. Run the script (you can generate a config and use it if you want)
-
-    ```
-    $ ./install.sh --post-install
-    ```
+**Note:** Default password: `nemesis`
 
 ## TODO
 
-- Lots of things
-    - Store progress
-        - Continue from where you left off, if error encountered
-    - dm-crypt +/- LUKS
+- Store progress
+    - Continue from where you left off, if error encountered
+- dm-crypt +/- LUKS
 
-[Arch Linux Downloads]: https://www.archlinux.org/download/
+[Arch Installation ISO]: https://www.archlinux.org/download

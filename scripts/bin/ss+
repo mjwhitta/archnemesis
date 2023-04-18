@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# A wrapper script for ss.
+# by Miles Whittaker <mj@whitta.dev>
+#
+# --------------------------------------------------------------------
+# The MIT License (MIT)
+#
+# Copyright (c) 2020 Miles Whittaker
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# --------------------------------------------------------------------
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+better_ss() {
+    local line
+    local pid
+    local pids
+
+    echo "PROTO|STATE|LADDR|RADDR|PID|USER|CMD"
+
+    while read -r line; do
+        unset pids
+
+        case "$line" in
+            "Netid"*) continue ;;
+            "tcp|LISTEN"*) ;;
+            "udp|UNCONN"*) ;;
+            *) [[ -z $listen ]] || continue ;;
+        esac
+
+        pids="${line##*|}"
+        line="${line%|"$pids"}"
+
+        if [[ -n "$pids" ]]; then
+            for pid in ${pids//,/ }; do
+                pid+="|$(
+                    ps -o user=,cmd= -q "$pid" | sed -r "s/\s+/|/"
+                )"
+                echo "$line|$pid"
+            done; unset pid
+        else
+            echo "$line|-|-|-"
+        fi
+    done < <(
+        ${sudo:+sudo }ss -anptu 2>/dev/null | sed -r \
+        -e "s/users:\(|\)\s*$//g" \
+        -e "s/\([^,]+,pid=([0-9]+),fd=[0-9]+\)/\1/g" \
+        -e "s/^$regex/\1|\2|\3|\4|\5/g" -e "s/\|\|/|-|/g"
+    ); unset line
+}
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS]
+
+DESCRIPTION
+    Makes ss output a little more readable.
+
+OPTIONS
+    -h, --help        Display this help message
+    -l, --listen      Only show listening ports
+        --no-color    Disable colorized output
+    -s, --sudo        Run as root
+
+EOF
+    exit "$1"
+}
+
+declare -a args
+unset help listen sudo
+color="true"
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-h"|"--help") help="true" ;;
+        "-l"|"--listen") listen="true" ;;
+        "--no-color") unset color ;;
+        "-s"|"--sudo") sudo="true" ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check OS
+case "$(uname -s)" in
+    "Darwin") errx 2 "Unsupported OS" ;;
+esac
+
+# Check for missing dependencies
+declare -a deps
+deps+=("column")
+deps+=("ps")
+deps+=("sed")
+deps+=("ss")
+deps+=("sudo")
+deps+=("uname")
+check_deps
+
+# Check for valid params
+[[ $# -eq 0 ]] || usage 1
+
+# Build regex
+regex="(\S+)" # Netid
+regex+="\s+(\S+)" # State
+regex+="\s+[0-9]+" # Ignore Recv-Q
+regex+="\s+[0-9]+" # Ignore Send-Q
+regex+="\s+(\S+)" # Local Address:Port
+regex+="\s+(\S+)" # Peer Address:Port
+regex+="\s*([0-9,]+)?" # Process
+regex+=".*" # Ignore the rest
+
+better_ss | column -s "|" -t

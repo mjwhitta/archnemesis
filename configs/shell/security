@@ -1,0 +1,192 @@
+# shellcheck disable=SC2155 shell=bash
+
+# If not running interactively, don't do anything
+[[ $- == *i* ]] || return
+
+# Security functions + an alias
+if [[ -n $(command -v docker) ]]; then
+    function create_tmp_docker_entry() {
+        cat >/tmp/dockerentry <<EOF
+#!/usr/bin/env bash
+
+# Default group (user:1000)
+gid="\${DKR_GID:-1000}"
+gname="\${DKR_GNAME:-user}"
+
+# Default user (user:1000)
+uid="\${DKR_UID:-1000}"
+uname="\${DKR_UNAME:-user}"
+
+# If root or UID of 0 provided, just run command
+if [[ \$(id -u) -ne 0 ]] || [[ \$uid -eq 0 ]]; then
+    exec "\$@"
+fi
+
+# Create group, if it doesn't exist
+groupadd -f -g "\$gid" -o "\$gname" &>/dev/null
+groupmod -g "\$gid" -o "\$gname" &>/dev/null
+
+# Create user, if they don't exist
+useradd -d /home/user -g "\$gid" -mou "\$uid" "\$uname" &>/dev/null
+usermod -d /home/user -g "\$gid" -mou "\$uid" "\$uname" &>/dev/null
+chown -R "\$uid":"\$gid" /home/user
+
+# Sudo (a few different ways)
+groupadd -f sudo
+groupadd -f wheel
+usermod -a -G sudo,wheel "\$uname"
+mkdir -p /etc/sudoers.d
+echo "\$uname ALL=(ALL) NOPASSWD: ALL" >"/etc/sudoers.d/\$uname"
+
+# Store cmd
+cmd="\$*"
+[[ -n \$cmd ]] || cmd="\$(command -v bash)"
+[[ -n \$cmd ]] || cmd="sh"
+
+# Run command as specified user
+export HOME="/home/user"
+export USER="\$uname"
+
+if [[ -n \$(command -v sudo) ]]; then
+    # shellcheck disable=SC2086
+    sudo -E -u "\$uname" \$cmd
+else
+    su -c "\$cmd" -m "\$uname"
+fi
+EOF
+        chmod 700 /tmp/dockerentry
+    }
+
+    alias dc="docker compose"
+    alias dclean="docker system prune -a -f --volumes"
+    alias de="docker exec -i -t"
+    alias di="docker images"
+    alias dl="docker logs -f"
+    alias dps="docker ps -a"
+    alias dr="docker run -i --rm -t"
+    alias drpwd="docker run -i --rm -t -v \"\$(pwd)\":/pwd:Z -w /pwd"
+
+    function drun() {
+        docker run \
+            -e DKR_GID="$(id -g)" -e DKR_GNAME="$(id -gn)" \
+            -e DKR_UID="$(id -u)" -e DKR_UNAME="$(id -nu)" \
+            -i --rm -t "$@"
+    }
+
+    function drunpwd() {
+        drun -v "$(pwd)":/pwd:Z -w /pwd "$@"
+    }
+
+    function metasploit_image() {
+        local entrydir="/usr/src/metasploit-framework"
+        local image="metasploitframework/metasploit-framework:latest"
+        local name="msfconsole_$(head -c 8 /dev/random | xxd -p)"
+
+        mkdir -p "$HOME/.msf4"
+        drunpwd -e MSF_GID="$(id -g)" -e MSF_UID="$(id -u)" \
+            --entrypoint "$entrydir/docker/entrypoint.sh" \
+            --name "$name" -v "$HOME/.msf4":/home/msf/.msf4:Z "$@"
+    }
+
+    if [[ -z $(command -v msfconsole) ]]; then
+        function msfconsole() {
+            local entrydir="/usr/src/metasploit-framework"
+            local image="metasploitframework/metasploit-framework"
+            metasploit_image -p 4444:4444 -p 8000-8500:8000-8500 \
+            ${image}:latest "$entrydir/msfconsole" -q "$@"
+        }
+    fi
+
+    if [[ -z $(command -v msfvenom) ]]; then
+        function msfvenom() {
+            local entrydir="/usr/src/metasploit-framework"
+            local image="metasploitframework/metasploit-framework"
+            metasploit_image ${image}:latest "$entrydir/msfvenom" "$@"
+        }
+    fi
+
+    if [[ -z $(command -v nfspysh) ]]; then
+        function nfspysh() {
+            drunpwd --name "nfspy_$(head -c 8 /dev/random | xxd -p)" \
+                danielpresl/nfspy nfspysh "$@"
+        }
+    fi
+
+    if [[ -z $(command -v pwsh) ]]; then
+        function pwsh() {
+            echo "[!] Run the following commands first:"
+            echo "- Install-Module PSWSMan"
+            echo "- Install-WSMan"
+            echo
+            drunpwd mcr.microsoft.com/powershell:debian-11
+        }
+    fi
+
+    if [[ -z $(command -v r2) ]]; then
+        function r2() {
+            r2_image r2 "$@"
+        }
+    fi
+
+    function r2_image() {
+        create_tmp_docker_entry
+        drunpwd --cap-add=SYS_PTRACE --entrypoint /dockerentry \
+            --name "r2_$(head -c 8 /dev/random | xxd -p)" -u root \
+            -v /tmp/dockerentry:/dockerentry:ro radare/radare2 "$@"
+    }
+
+    function r2sh() {
+        r2_image bash
+    }
+fi
+
+function ngrok() {
+    local port="${1:-8080}"
+    local service="${2:-http}"
+
+    case "$*" in
+        *"-h"*)
+            echo "Usage: ngrok [port] [service]"
+            echo
+            echo "DESCRIPTION"
+            echo -n "    Punch a hole thru the firewall using SSH "
+            echo "and ngrok servers. Default"
+            echo "    port/service is 8080/http(s)."
+            echo
+            echo "OPTIONS"
+            echo "    -h, --help    Display this help message"
+            echo
+            echo "SERVICES"
+            echo "    http(s)"
+            echo "    tls"
+            return
+            ;;
+    esac
+
+    case "$service" in
+        "https") service="http" ;;
+        "tls")
+            # Free ngrok doesn't allow TLS so use socat if we got it
+            if [[ -n $(command -v socat) ]]; then
+                oldport="$port"
+                ((port += 1))
+                service="http"
+
+                # Un-TLS and use HTTP
+                socat tcp-listen:$port,fork,reuseaddr \
+                    openssl:localhost:"$oldport",verify=0 &
+            else
+                echo "socat not found"
+                return
+            fi
+            ;;
+    esac
+
+    ssh -o "ControlMaster no" -o "IdentitiesOnly yes" \
+        -R 0:localhost:"$port" tunnel.us.ngrok.com "$service"
+
+    # Kill socat if started
+    [[ -z $(command -v socat) ]] || pkill -P $$ socat
+}
+
+function shh() { ssh -t "$@" -- HISTFILE= bash --norc; }

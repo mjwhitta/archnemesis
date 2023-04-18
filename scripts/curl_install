@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+# Update
+pacman -Sy || exit 1
+
+# Install git
+pacman --noconfirm -S git || exit 1
+
+# Clone repo
+rm -f -r archnemesis
+git clone https://github.com/mjwhitta/archnemesis.git
+cd ./archnemesis || exit 1
+
+echo
+echo -e "\e[36m[=] Modify ./archnemesis/nemesis.cfg as needed.\e[0m"
+echo -e "\e[32m[+] Then run: cd ./archnemesis && ./install\e[0m"

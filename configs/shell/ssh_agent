@@ -1,0 +1,32 @@
+# shellcheck disable=SC1091 shell=bash
+
+# If not running interactively, don't do anything
+[[ $- == *i* ]] || return
+
+[[ -n $(command -v ssh-agent) ]] || return
+
+# Start agent if needed
+mkdir -p "$HOME/.ssh"
+[[ -f "$HOME/.ssh/agent" ]] || ssh-agent >"$HOME/.ssh/agent"
+. "$HOME/.ssh/agent" >/dev/null
+
+# If PID exists but SSH_AUTH_SOCK doesn't, then restart agent. If
+# PID doesn't exist, try to start agent again.
+pidchk="$(pgrep -af "ssh-agent" | grep -s "$SSH_AGENT_PID")"
+if [[ -z $pidchk ]] || [[ ! -e "$SSH_AUTH_SOCK" ]]; then
+    [[ -z $pidchk ]] || ssh-agent -k 2>/dev/null
+    ssh-agent >"$HOME/.ssh/agent"
+    . "$HOME/.ssh/agent" >/dev/null
+fi
+unset pidchk
+
+# Add missing keys
+declare -a ssh_keys
+while read -r key; do
+    fp="$(ssh-keygen -f "$key" -l 2>/dev/null | awk '{print $2}')"
+    [[ -n $fp ]] || continue
+    ssh-add -l | grep -qs "$fp" || ssh_keys+=("$key")
+    unset fp
+done < <(grep -lrs "PRIVATE KEY" "$HOME/.ssh" | sort); unset key
+[[ ${#ssh_keys[@]} -eq 0 ]] || ssh-add "${ssh_keys[@]}"
+unset ssh_keys

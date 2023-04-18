@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# A wrapper script for netstat.
+# by Miles Whittaker <mj@whitta.dev>
+#
+# --------------------------------------------------------------------
+# The MIT License (MIT)
+#
+# Copyright (c) 2020 Miles Whittaker
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# --------------------------------------------------------------------
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+better_netstat() {
+    local line
+    local pid
+
+    echo "PROTO|STATE|LADDR|RADDR|PID|USER|CMD"
+
+    while read -r line; do
+        unset pid
+
+        case "$line" in
+            "Active Multipath"*) break ;;
+            "Active"*|"Proto"*) continue ;;
+            "tcp|LISTEN"*|"tcp6|LISTEN"*) ;;
+            "udp|-"*|"udp6|-"*) ;;
+            *) [[ -z $listen ]] || continue ;;
+        esac
+
+        pid="${line##*|}"
+        if [[ "$pid" != "-" ]]; then
+            pid="$($ps "$pid" | $sed -r "s/\s+/|/")"
+        else
+            pid+="|-"
+        fi
+
+        echo "$line${pid:+|$pid}"
+    done < <(
+        $netstat 2>/dev/null | $sed -r \
+        -e "s/^$regex/\1|\4|\2|\3|\5/g" -e "s/\|\|/|-|/g"
+    ); unset line
+}
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS]
+
+DESCRIPTION
+    Makes netstat output a little more readable.
+
+OPTIONS
+    -h, --help        Display this help message
+    -l, --listen      Only show listening ports
+        --no-color    Disable colorized output
+    -s, --sudo        Run as root
+
+EOF
+    exit "$1"
+}
+
+declare -a args
+unset help listen sudo
+color="true"
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-h"|"--help") help="true" ;;
+        "-l"|"--listen") listen="true" ;;
+        "--no-color") unset color ;;
+        "-s"|"--sudo") sudo="true" ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+deps+=("column")
+deps+=("netstat")
+deps+=("ps")
+case "$(uname -s)" in
+    "Darwin") deps+=("gsed") ;;
+    *) deps+=("sed") ;;
+esac
+deps+=("sudo")
+deps+=("uname")
+check_deps
+
+# Check for valid params
+[[ $# -eq 0 ]] || usage 1
+
+os="$(uname -s)"
+
+case "$os" in
+    "Darwin")
+        netstat="netstat -anv"
+        ps="ps -o user=,args= -p"
+        sed="gsed"
+        ;;
+    *)
+        netstat="${sudo:+sudo }netstat -anptu"
+        ps="ps -o user=,cmd= -q"
+        sed="sed"
+        ;;
+esac
+
+# Build regex
+regex="(\S+)" # Proto
+regex+="\s+[0-9]+" # Ignore Recv-Q
+regex+="\s+[0-9]+" # Ignore Send-Q
+regex+="\s+(\S+)" # Local Address
+regex+="\s+(\S+)" # Foreign Address
+regex+="\s+([A-Za-z]\S*[0-9]*)?" # State or (state)
+case "$os" in
+    "Darwin") regex+="\s+[0-9]+\s+[0-9]+" ;; # Ignore [rs]hiwat
+esac
+regex+="\s+([0-9-]+)" # pid
+regex+=".*" # Ignore the rest
+
+better_netstat | column -s "|" -t

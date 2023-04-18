@@ -1,0 +1,63 @@
+[global_config]
+  geometry_hinting = True
+  extra_styling = False
+  inactive_color_offset = 1.0
+[keybindings]
+[profiles]
+  [[default]]
+    visible_bell = True
+    background_color = "#282a36"
+    font = DejaVuSansMono Nerd Font Mono 11
+    foreground_color = "#f8f8f2"
+    show_titlebar = False
+    scrollbar_position = hidden
+    scrollback_infinite = True
+    PALETTE
+    word_chars = "-,./?%&#:_~"
+    login_shell = True
+    use_system_font = False
+  [[dracula]]
+    visible_bell = True
+    background_color = "#282a36"
+    font = DejaVuSansMono Nerd Font Mono 11
+    foreground_color = "#f8f8f2"
+    show_titlebar = False
+    scrollbar_position = hidden
+    scrollback_infinite = True
+    palette = "#21222c:#ff5555:#50fa7b:#f1fa8c:#bd93f9:#ff79c6:#8be9fd:#f8f8f2:#6272a4:#ff6e6e:#69ff94:#ffffa5:#d6acff:#ff92df:#a4ffff:#ffffff"
+    word_chars = "-,./?%&#:_~"
+    login_shell = True
+    use_system_font = False
+  [[solarized dark]]
+    visible_bell = True
+    background_color = "#002b36"
+    font = DejaVuSansMono Nerd Font Mono 11
+    foreground_color = "#839496"
+    show_titlebar = False
+    scrollbar_position = hidden
+    scrollback_infinite = True
+    palette = "#073642:#dc322f:#859900:#b58900:#268bd2:#d33682:#2aa198:#eee8d5:#002b36:#cb4b16:#586e75:#657b83:#839496:#6c71c4:#93a1a1:#fdf6e3"
+    word_chars = "-,./?%&#:_~"
+    login_shell = True
+    use_system_font = False
+  [[solarized light]]
+    visible_bell = True
+    background_color = "#fdf6e3"
+    font = DejaVuSansMono Nerd Font Mono 11
+    foreground_color = "#657b83"
+    show_titlebar = False
+    scrollbar_position = hidden
+    scrollback_infinite = True
+    palette = "#073642:#dc322f:#859900:#b58900:#268bd2:#d33682:#2aa198:#eee8d5:#002b36:#cb4b16:#586e75:#657b83:#839496:#6c71c4:#93a1a1:#fdf6e3"
+    word_chars = "-,./?%&#:_~"
+    login_shell = True
+    use_system_font = False
+[layouts]
+  [[default]]
+    [[[window0]]]
+      type = Window
+      parent = ""
+    [[[child1]]]
+      type = Terminal
+      parent = window0
+[plugins]

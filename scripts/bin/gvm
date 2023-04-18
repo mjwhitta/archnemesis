@@ -1,0 +1,405 @@
+#!/usr/bin/env bash
+# A script that is similar to rvm but for Go.
+# by Miles Whittaker <mj@whitta.dev>
+#
+# --------------------------------------------------------------------
+# The MIT License (MIT)
+#
+# Copyright (c) 2020 Miles Whittaker
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation files
+# (the "Software"), to deal in the Software without restriction,
+# including without limitation the rights to use, copy, modify, merge,
+# publish, distribute, sublicense, and/or sell copies of the Software,
+# and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# --------------------------------------------------------------------
+
+### Helpers begin
+check_deps() {
+    local missing
+    for d in "${deps[@]}"; do
+        if [[ -z $(command -v "$d") ]]; then
+            # Force absolute path
+            if [[ ! -e "/$d" ]]; then
+                err "$d was not found"
+                missing="true"
+            fi
+        fi
+    done; unset d
+    [[ -z $missing ]] || exit 128
+}
+err() { echo -e "${color:+\e[31m}[!] $*${color:+\e[0m}" >&2; }
+errx() { err "${*:2}"; exit "$1"; }
+good() { echo -e "${color:+\e[32m}[+] $*${color:+\e[0m}"; }
+info() { echo -e "${color:+\e[37m}[*] $*${color:+\e[0m}"; }
+long_opt() {
+    local arg shift="0"
+    case "$1" in
+        "--"*"="*) arg="${1#*=}"; [[ -n $arg ]] || return 127 ;;
+        *) shift="1"; shift; [[ $# -gt 0 ]] || return 127; arg="$1" ;;
+    esac
+    echo "$arg"
+    return "$shift"
+}
+subinfo() { echo -e "${color:+\e[36m}[=] $*${color:+\e[0m}"; }
+warn() { echo -e "${color:+\e[33m}[-] $*${color:+\e[0m}"; }
+### Helpers end
+
+godel() {
+    local use
+
+    use="$(ls -l "$cache/use" 2>/dev/null)"
+    use="${use##*-> }"
+
+    rm -fr "$cache/v$1"
+
+    if [[ "v$1" == "$use" ]]; then
+        rm -f "$cache/use"
+        gofallback
+    fi
+
+    # Test new symlinked version
+    if [[ -n $(command -v go) ]]; then
+        good "$(go version)"
+    else
+        err "No go installation found"
+    fi
+}
+
+gofallback() {
+    local version
+
+    mkdir -p "$cache"
+
+    # Fallback to system version
+    if [[ ! -e "$cache/use" ]]; then
+        if [[ $# -eq 0 ]]; then
+            while read -r version; do
+                ln -fs "$version" "$cache/use"
+                return
+            done < <(
+                find "$cache" -maxdepth 1 -mindepth 1 -type d \
+                -name "v*" -exec basename {} \; | \
+                sort -k 1,1nr -k 2,2nr -k 3,3nr -t "."
+            ); unset version
+        fi
+
+        if [[ -d /usr/lib/go ]]; then
+            ln -fs /usr/lib/go "$cache/use"
+            return
+        elif [[ -d /usr/local/Cellar/go ]]; then
+            while read -r version; do
+                ln -fs "/usr/local/Cellar/go/$version/libexec" \
+                    "$cache/use"
+                return
+            done < <(
+                find /usr/local/Cellar/go -maxdepth 1 -mindepth 1 \
+                    -type d -exec basename {} \; | \
+                sort -k 1,1nr -k 2,2nr -k 3,3nr -t "."
+            ); unset version
+        elif [[ $# -eq 1 ]]; then
+            # Check for non-system versions as an extra fallback
+            gofallback
+        fi
+    fi
+}
+
+goget() {
+    local tgz
+
+    tgz="$(
+        curl -Ls "$gourl" | \
+        grep -ioPs "dl/\Kgo$1\.$os-$arch\.tar\.gz" | sort -u
+    )"
+
+    [[ -n $tgz ]] || errx 3 "Version $1 not found"
+
+    curl -kLo "$cache/$tgz" -s "$gourl/$tgz" || \
+        errx 4 "Failed to download tarball"
+
+    if [[ ! -d "$cache/v$1" ]]; then
+        tar -C "$cache" -f "$cache/$tgz" -xz || \
+            errx 5 "Failed to extract tarball"
+
+        mv "$cache/go" "$cache/v$1"
+    fi
+
+    # Define fallback values so "rm -fr /" doesn't happen
+    rm -fr "${cache:-/tmp}/${tgz:-asdf}"
+}
+
+golatest() {
+    local version
+
+    while read -r version; do
+        case "$version" in
+            *"rc"*) [[ -n $rc ]] || continue ;;
+        esac
+
+        gouse "$version"
+        break
+    done < <(
+        curl -Ls "$gourl" | \
+        grep -ioPs "dl/go\K.+?(?=\.$os-$arch\.tar\.gz)" | \
+        sort -k 1,1nr -k 2,2nr -k 3,3nr -t "." -u
+    ); unset version
+}
+
+gols() {
+    local found
+    local use
+    local version
+
+    use="$(ls -l "$cache/use" 2>/dev/null)"
+    use="${use##*-> }"
+
+    if [[ -d /usr/lib/go ]]; then
+        found="true"
+        version="$(/usr/lib/go/bin/go version | awk '{print $3}')"
+
+        if [[ -z $use ]]; then
+            info "v${version##go} (system)"
+        else
+            good "v${version##go} (system)"
+        fi
+    elif [[ -d /usr/local/Cellar/go ]]; then
+        while read -r version; do
+            found="true"
+            version="$(
+                "/usr/local/Cellar/go/$version/libexec/bin/go" \
+                version | awk '{print $3}'
+            )"
+
+            if [[ -z $use ]]; then
+                info "v${version##go} (system)"
+                use="FIRST TIME ONLY"
+            else
+                good "v${version##go} (system)"
+            fi
+        done < <(
+            find /usr/local/Cellar/go -maxdepth 1 -mindepth 1 \
+                -type d -exec basename {} \; | \
+            sort -k 1,1nr -k 2,2nr -k 3,3nr -t "."
+        ); unset version
+    fi
+
+    while read -r version; do
+        found="true"
+
+        if [[ "$version" == "$use" ]]; then
+            info "$version"
+        else
+            good "$version"
+        fi
+    done < <(
+        find "$cache" -maxdepth 1 -mindepth 1 -type d -name "v*" \
+        -exec basename {} \; | \
+        sort -k 1,1nr -k 2,2nr -k 3,3nr -t "." -u
+    ); unset version
+
+    [[ -n $found ]] || err "No go installation found"
+}
+
+gosearch() {
+    local version
+
+    while read -r version; do
+        case "$version" in
+            *"rc"*) [[ -n $rc ]] || continue ;;
+        esac
+
+        good "v$version"
+    done < <(
+        curl -Ls "$gourl" | \
+        grep -ioPs "dl/go\K($1.*?)(?=\.$os-$arch\.tar\.gz)" | \
+        sort -k 1,1nr -k 2,2nr -k 3,3nr -t "." -u
+    ); unset version
+}
+
+gouse() {
+    local use
+
+    case "$1" in
+        "system") rm -f "$cache/use"; gofallback system ;;
+        *)
+            use="$(
+                find "$cache" -maxdepth 1 -mindepth 1 -type d \
+                -name "v$1"
+            )"
+
+            # Download version if needed
+            [[ -n $use ]] || goget "$1"
+
+            # Symlink new version
+            if [[ -d "$cache/v$1" ]]; then
+                rm -f "$cache/use"
+                ln -s "v$1" "$cache/use"
+            fi
+            ;;
+    esac
+
+    # Test symlinked version
+    [[ -z $(command -v go) ]] || good "$(go version)"
+    [[ -n $(command -v go) ]] || err "No go installation found"
+}
+
+gvmupdate() {
+    local repo="https://raw.githubusercontent.com/mjwhitta/scripts"
+    local gvm="main/bin/gvm"
+
+    curl -kLo /tmp/gvm -s "$repo/$gvm" || \
+        errx 3 "Failed to get new gvm"
+
+    cat /tmp/gvm >"$0"
+    rm -f /tmp/gvm
+    exit 0
+}
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTIONS]
+
+DESCRIPTION
+    This script is similar to rvm, but for Go. You will need to add
+    something like the following lines to your ~/.bashrc and then
+    source it:
+
+        export GOROOT="\$HOME/.cache/gvm/use"
+        export PATH="\$GOROOT/bin\${PATH:+:\$PATH}"
+
+OPTIONS
+    -c, --clear            Clear the cached versions of Go
+    -d, --delete=STRING    Delete the specified version
+    -h, --help             Display this help message
+        --latest           Install latest version
+    -l, --list             Show cached versions (default)
+        --no-color         Disable colorized output
+        --rc               Accept release candidates
+    -s, --search=STRING    Search for versions starting with STRING
+        --update           Download newest gvm from GitHub
+    -u, --use=STRING       Use specified version
+    -V, --version          Show gvm version
+
+ADVANCED CONFIG
+    If you want a more advanced setup with a different GOPATH for each
+    Go version, add something like the following lines to your
+    ~/.bashrc and then source it:
+
+        if [[ -d "\$HOME/.cache/gvm" ]]; then
+            export GOROOT="\$HOME/.cache/gvm/use"
+            export PATH="\$GOROOT/bin\${PATH:+:\$PATH}"
+        fi
+        if [[ -n \$(command -v go) ]]; then
+            GOPATH="\$(go version)"
+            GOPATH="\${GOPATH##go version go}"
+            if [[ -n \$GOPATH ]]; then
+                export GOPATH="\$HOME/.go/v\${GOPATH%% *}"
+                mkdir -p "\$GOPATH/bin"
+            fi
+        fi
+
+    If you use this advanced setup, you will need to re-source your
+    ~/.bashrc or open a new shell every time you change Go versions.
+
+EOF
+    exit "$1"
+}
+
+declare -a args
+unset help rc vers
+action="list"
+cache="$HOME/.cache/gvm"
+color="true"
+gourl="https://go.dev/dl"
+version="v1.0.2"
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        "--") shift; args+=("$@"); break ;;
+        "-c"|"--clear") action="clear" ;;
+        "-d"|"--delete"*) action="delete"; vers="$(long_opt "$@")" ;;
+        "-h"|"--help") help="true" ;;
+        "--latest") action="latest" ;;
+        "-l"|"--list") action="list" ;;
+        "--no-color") unset color ;;
+        "-s"|"--search"*) action="search"; vers="$(long_opt "$@")" ;;
+        "--rc") rc="true" ;;
+        "-u"|"--use"*) action="use"; vers="$(long_opt "$@")" ;;
+        "--update"*) action="update" ;;
+        "-V"|"--version") action="version" ;;
+        *) args+=("$1") ;;
+    esac
+    case "$?" in
+        0) ;;
+        1) shift ;;
+        *) usage "$?" ;;
+    esac
+    shift
+done
+[[ ${#args[@]} -eq 0 ]] || set -- "${args[@]}"
+
+# Help info
+[[ -z $help ]] || usage 0
+
+# Check for missing dependencies
+declare -a deps
+deps+=("basename")
+deps+=("curl")
+deps+=("find")
+deps+=("grep")
+deps+=("head")
+deps+=("ln")
+deps+=("sort")
+deps+=("tar")
+deps+=("uname")
+check_deps
+
+# Check for valid params
+[[ $# -eq 0 ]] || usage 1
+
+# Get system metadata
+case "$(uname -m)" in
+    "arm64") arch="arm64" ;;
+    "armv"*"l") arch="armv6l" ;;
+    "i386") arch="386" ;;
+    "x86_64") arch="amd64" ;;
+    *) errx 1 "Unsupported architecture $(uname -m)" ;;
+esac
+case "$(uname -s)" in
+    "Darwin") os="darwin" ;;
+    "FreeBSD") os="freebsd" ;;
+    "Linux") os="linux" ;;
+    *) errx 2 "Unsupported OS $(uname -s)" ;;
+esac
+
+# Fallback to system Go, if needed and installed
+gofallback
+
+# Normalize version
+[[ -z $vers ]] || vers="${vers#v}"
+
+case "$action" in
+    "clear") rm -fr "$cache"; gofallback ;;
+    "delete") godel "$vers" ;;
+    "latest") golatest ;;
+    "list") gols ;;
+    "search") gosearch "$vers" ;;
+    "update") gvmupdate ;;
+    "use") gouse "$vers" ;;
+    "version") echo "gvm $version ($os/$arch)" ;;
+esac
