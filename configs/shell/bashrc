@@ -34,6 +34,7 @@ case "$SHELL" in
         # {{{ Bash setup
 
         # History settings
+        export HISTFILE="$HOME/.bash_history"
         export HISTSIZE="1000"
         export HISTFILESIZE="2000"
         export HISTCONTROL="ignoreboth"
@@ -81,6 +82,7 @@ case "$SHELL" in
         export ZSHV="${ZSHV%\.*}"
 
         # History settings
+        export HISTFILE="$HOME/.zsh_history"
         export HISTSIZE="1000"
         export SAVEHIST="$HISTSIZE"
         setopt incappendhistory histexpiredupsfirst histignorealldups
