@@ -1,4 +1,4 @@
-# shellcheck disable=SC1090,SC1091,SC2155 shell=bash
+# shellcheck disable=SC1090,SC1091,SC2155,SC2207 shell=bash
 
 # If not running interactively, don't do anything
 [[ $- == *i* ]] || return
@@ -604,45 +604,39 @@ case "$SHELL" in
         # Complete gimme function
         if [[ -n $(command -v apt-cache) ]]; then
             function _apt_install_complete() {
-                read -a -r reply <(
-                    apt-cache --no-generate pkgnames "$1"
-                )
+                reply=($(apt-cache --no-generate pkgnames "$1"))
             }
             compctl -K _apt_install_complete gimme
         elif [[ -n $(command -v brew) ]]; then
             function _brew_install_complete() {
-                read -a -r reply <(brew search "$1")
+                reply=($(brew search "$1"))
             }
             compctl -K _brew_install_complete gimme
         elif [[ -n $(command -v crew) ]]; then
             function _crew_install_complete() {
-                read -a -r reply <(
-                    crew search "$1" | awk '{print $1}'
-                )
+                reply=($(crew search "$1" | awk '{print $1}'))
             }
             compctl -K _crew_install_complete gimme
         elif [[ -n $(command -v pacman) ]]; then
             if [[ -n $(command -v yay) ]]; then
-                compdef _gnu_generic yay
                 function _yay_install_complete() {
-                    read -a -r reply <(
-                        yay --color=never -Ss "$1" | \
-                        grep -oPs "^[^/]+/\K^\S*"
-                    )
+                    reply=($(yay -c -P))
                 }
                 compctl -K _ruaur_install_complete gimme
             elif [[ -n $(command -v ruaur) ]]; then
-                compdef _gnu_generic ruaur
+                if [[ -n $(command -v compdef) ]]; then
+                    compdef _gnu_generic ruaur
+                fi
                 function _ruaur_install_complete() {
-                    read -a -r reply <(ruaur --names-only -Ss "$1")
+                    reply=($(ruaur --names-only -Ss "$1"))
                 }
                 compctl -K _ruaur_install_complete gimme
             else
                 function _pacman_install_complete() {
-                    read -a -r reply <(
-                        pacman --color=never -Ss "$1" | \
+                    # shellcheck disable=SC2034
+                    reply=($(pacman --color=never -Ss "$1" | \
                         grep -oPs "^[^/]+/\K^\S*"
-                    )
+                    ))
                 }
                 compctl -K _pacman_install_complete gimme
             fi

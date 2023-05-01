@@ -476,8 +476,12 @@ function __nemesis_prompt_ps1() {
             "simple+")
                 date="$(date +%FT%H:%M:%S%z)"
                 case "$NEMESIS_PROMPT_SHELL" in
-                    *"bash") printf "\n \\\u@\h $date\n \w\n \$ " ;;
-                    *"zsh") printf "\n %%n@%%m $date\n %%~\n \$ " ;;
+                    *"bash")
+                        printf "\n \\\u@\h %s\n \w\n \$ " "$date"
+                        ;;
+                    *"zsh")
+                        printf "\n %%n@%%m %s\n %%~\n \$ " "$date"
+                        ;;
                 esac
                 return 0
                 ;;
