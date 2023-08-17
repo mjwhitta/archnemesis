@@ -10,7 +10,7 @@ based on it.
 From an [Arch Installation ISO]:
 
 ```
-$ curl -Ls get.archnemesis.ninja | bash
+$ curl -k -L -s get.archnemesis.nation-state.org | bash
 $ cd archnemesis
 $ vim ./nemesis.cfg
 ```
