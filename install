@@ -905,7 +905,7 @@ Usage: ${0##*/} [OPTIONS] [dev]
 DESCRIPTION
     Install ArchNemesis (Arch plus some sane set of offsec tools).
     Providing the install device/location is optional. If you don't
-    provided one, you will be prompted.
+    provide one, you will be prompted.
 
 OPTIONS
     -h, --help        Display this help message
