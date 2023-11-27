@@ -275,6 +275,10 @@ configure_archnemesis() {
         run_in_chroot "chown -R $name:$name /usr/share/lnxpcs"
     fi
 
+    # Enable systemd-timesyncd
+    subinfo "Enabling systemd-timesyncd"
+    run_in_chroot "systemctl enable systemd-timesyncd"
+
     # Loop thru users and setup configs
     for idx in $(seq 1 "$(json_get ".users|length")"); do
         ((idx -= 1)) # 0-indexed
@@ -331,13 +335,6 @@ configure_archnemesis() {
         # ruby
         cp -f ./configs/gemrc "$uhome/.gemrc"
 
-        # snapwin
-        if [[ -n $(boolean graphical) ]]; then
-            subinfo "Configuring snapwin for $name"
-            rm -f -r "$ucfg/snapwin"
-            cp -r ./configs/snapwin "$ucfg/"
-        fi
-
         # top
         subinfo "Configuring top for $name"
         cp -f ./configs/toprc "$uhome/.toprc"
@@ -356,6 +353,11 @@ configure_archnemesis() {
             rm -f -r "$ucfg/rofi"
             cp -r ./configs/rofi "$ucfg/"
             ln -f -s "$theme.rasi" "$ucfg/rofi/config.rasi"
+
+            # snapwin
+            subinfo "Configuring snapwin for $name"
+            rm -f -r "$ucfg/snapwin"
+            cp -r ./configs/snapwin "$ucfg/"
 
             # Configure requested session
             case "$session" in
