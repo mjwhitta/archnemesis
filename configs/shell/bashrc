@@ -182,11 +182,14 @@ case "$(uname -s)" in
 esac
 
 # Java
-export JAVA_HOME="$(
-    find /usr/lib/jvm -maxdepth 1 \
-    -iregex ".*java-[0-9]+-openjdk.*" -print 2>/dev/null | \
-    sort -k 2.1 -nr -t "-" | head -n 1
-)"
+export JAVA_HOME="/usr/lib/jvm/default"
+if [[ ! -d "$JAVA_HOME" ]]; then
+    export JAVA_HOME="$(
+        find /usr/lib/jvm -maxdepth 1 \
+        -iregex ".*java-[0-9]+-openjdk.*" -print 2>/dev/null | \
+        sort -k 2.1 -nr -t "-" | head -n 1
+    )"
+fi
 
 # Editor of choice
 [[ -z $(command -v vim) ]] || export EDITOR="vim"
