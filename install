@@ -540,6 +540,14 @@ customize() {
     done
 }
 
+enable_color() {
+    local file="/mnt/etc/pacman.conf"
+
+    info "Enabling color in pacman.conf"
+    sed -i -r "s/^#(Color)/\\1/" "$file" || \
+        errx "$?" "failed to configure color"
+}
+
 enable_multilib() {
     local file="/mnt/etc/pacman.conf"
     local inc
@@ -739,7 +747,7 @@ install_packages() {
         cd ./yay-bin && \
         sudo -u nobody makepkg -c --needed -r -s && \
         pacman --noconfirm -U ./*.zst"
-    run_in_chroot "yay --editmenu --nodiffmenu --save"
+    run_in_chroot "yay --askyesremovemake --editmenu -P --save"
 }
 
 install_packages_aur() {
@@ -1023,6 +1031,7 @@ if [[ -n $(boolean graphical) ]]; then
     esac
 fi
 
+enable_color
 enable_multilib
 install_packages
 create_and_configure_users
