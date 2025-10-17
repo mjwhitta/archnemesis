@@ -65,10 +65,18 @@ godel() {
     use="$(ls -l "$cache/use" 2>/dev/null)"
     use="${use##*-> }"
 
-    rm -fr "$cache/v$1"
+    rm -f -r "$cache/v$1"
+    if [[ -n $GVMGOPATH ]]; then
+        chmod -R u=rwX "$GVMGOPATH/v$1" 2>/dev/null
+        rm -f -r "$GVMGOPATH/v$1"
+    fi
 
     if [[ "v$1" == "$use" ]]; then
         rm -f "$cache/use"
+        if [[ -n $GVMGOPATH ]]; then
+            rm -f "$GVMGOPATH/use"
+        fi
+
         gofallback
     fi
 
@@ -89,7 +97,13 @@ gofallback() {
     if [[ ! -e "$cache/use" ]]; then
         if [[ $# -eq 0 ]]; then
             while read -r version; do
-                ln -fs "$version" "$cache/use"
+                rm -f "$cache/use"
+                ln -s "$version" "$cache/use"
+                if [[ -n $GVMGOPATH ]]; then
+                    mkdir -p "$GVMGOPATH/$version"
+                    rm -f "$GVMGOPATH/use"
+                    ln -s "$version" "$GVMGOPATH/use"
+                fi
                 return
             done < <(
                 find "$cache" -maxdepth 1 -mindepth 1 -type d \
@@ -99,12 +113,27 @@ gofallback() {
         fi
 
         if [[ -d /usr/lib/go ]]; then
-            ln -fs /usr/lib/go "$cache/use"
+            rm -f "$cache/use"
+            ln -s /usr/lib/go "$cache/use"
+            if [[ -n $GVMGOPATH ]]; then
+                version="$(
+                    /usr/lib/go/bin/go version | awk '{print $3}'
+                )"
+                mkdir -p "$GVMGOPATH/v${version#go}"
+                rm -f "$GVMGOPATH/use"
+                ln -s "v${version#go}" "$GVMGOPATH/use"
+            fi
             return
         elif [[ -d /usr/local/Cellar/go ]]; then
             while read -r version; do
-                ln -fs "/usr/local/Cellar/go/$version/libexec" \
+                rm -f "$cache/use"
+                ln -s "/usr/local/Cellar/go/$version/libexec" \
                     "$cache/use"
+                if [[ -n $GVMGOPATH ]]; then
+                    mkdir -p "$GVMGOPATH/v$version"
+                    rm -f "$GVMGOPATH/use"
+                    ln -s "v$version" "$GVMGOPATH/use"
+                fi
                 return
             done < <(
                 find /usr/local/Cellar/go -maxdepth 1 -mindepth 1 \
@@ -138,8 +167,8 @@ goget() {
         mv "$cache/go" "$cache/v$1"
     fi
 
-    # Define fallback values so "rm -fr /" doesn't happen
-    rm -fr "${cache:-/tmp}/${tgz:-asdf}"
+    # Define fallback values so "rm -f -r /" doesn't happen
+    rm -f -r "${cache:-/tmp}/${tgz:-doesnotexist}"
 }
 
 golatest() {
@@ -172,23 +201,19 @@ gols() {
         version="$(/usr/lib/go/bin/go version | awk '{print $3}')"
 
         if [[ -z $use ]]; then
-            info "v${version##go} (system)"
+            info "v${version#go} (system)"
         else
-            good "v${version##go} (system)"
+            good "v${version#go} (system)"
         fi
     elif [[ -d /usr/local/Cellar/go ]]; then
         while read -r version; do
             found="true"
-            version="$(
-                "/usr/local/Cellar/go/$version/libexec/bin/go" \
-                version | awk '{print $3}'
-            )"
 
             if [[ -z $use ]]; then
-                info "v${version##go} (system)"
+                info "v$version (system)"
                 use="FIRST TIME ONLY"
             else
-                good "v${version##go} (system)"
+                good "v$version (system)"
             fi
         done < <(
             find /usr/local/Cellar/go -maxdepth 1 -mindepth 1 \
@@ -234,7 +259,13 @@ gouse() {
     local use
 
     case "$1" in
-        "system") rm -f "$cache/use"; gofallback system ;;
+        "system")
+            rm -f "$cache/use"
+            if [[ -n $GVMGOPATH ]]; then
+                rm -f "$GVMGOPATH/use"
+            fi
+            gofallback system
+            ;;
         *)
             use="$(
                 find "$cache" -maxdepth 1 -mindepth 1 -type d \
@@ -248,6 +279,11 @@ gouse() {
             if [[ -d "$cache/v$1" ]]; then
                 rm -f "$cache/use"
                 ln -s "v$1" "$cache/use"
+                if [[ -n $GVMGOPATH ]]; then
+                    mkdir -p "$GVMGOPATH/v$1"
+                    rm -f "$GVMGOPATH/use"
+                    ln -s "v$1" "$GVMGOPATH/use"
+                fi
             fi
             ;;
     esac
@@ -275,8 +311,7 @@ Usage: ${0##*/} [OPTIONS]
 
 DESCRIPTION
     This script is similar to rvm, but for Go. You will need to add
-    something like the following lines to your ~/.bashrc and then
-    source it:
+    the following lines to your ~/.bashrc and then source it:
 
         export GOROOT="\$HOME/.cache/gvm/use"
         export PATH="\$GOROOT/bin\${PATH:+:\$PATH}"
@@ -296,24 +331,13 @@ OPTIONS
 
 ADVANCED CONFIG
     If you want a more advanced setup with a different GOPATH for each
-    Go version, add something like the following lines to your
-    ~/.bashrc and then source it:
+    Go version, add the following lines to your ~/.bashrc and then
+    source it:
 
-        if [[ -d "\$HOME/.cache/gvm" ]]; then
-            export GOROOT="\$HOME/.cache/gvm/use"
-            export PATH="\$GOROOT/bin\${PATH:+:\$PATH}"
-        fi
-        if [[ -n \$(command -v go) ]]; then
-            GOPATH="\$(go version)"
-            GOPATH="\${GOPATH##go version go}"
-            if [[ -n \$GOPATH ]]; then
-                export GOPATH="\$HOME/.go/v\${GOPATH%% *}"
-                mkdir -p "\$GOPATH/bin"
-            fi
-        fi
-
-    If you use this advanced setup, you will need to re-source your
-    ~/.bashrc or open a new shell every time you change Go versions.
+        export GOPATH="\$HOME/.go/use"
+        export GOROOT="\$HOME/.cache/gvm/use"
+        export GVMGOPATH="\$HOME/.go"
+        export PATH="\$GOROOT/bin:\$GOPATH/bin\${PATH:+:\$PATH}"
 
 EOF
     exit "$1"
@@ -325,7 +349,7 @@ action="list"
 cache="$HOME/.cache/gvm"
 color="true"
 gourl="https://go.dev/dl"
-version="v1.0.2"
+version="v1.1.0"
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -394,7 +418,7 @@ gofallback
 [[ -z $vers ]] || vers="${vers#v}"
 
 case "$action" in
-    "clear") rm -fr "$cache"; gofallback ;;
+    "clear") rm -f -r "$cache"; gofallback ;;
     "delete") godel "$vers" ;;
     "latest") golatest ;;
     "list") gols ;;

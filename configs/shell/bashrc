@@ -247,16 +247,10 @@ export GEM_PATH="$GEM_HOME/gems"
 
 # Go
 if [[ -d "$HOME/.cache/gvm" ]]; then
+    export GOPATH="$HOME/.go/use"
     export GOROOT="$HOME/.cache/gvm/use"
-    export PATH="$GOROOT/bin${PATH:+:$PATH}"
-fi
-if [[ -n $(command -v go) ]]; then
-    GOPATH="$(go version)"
-    GOPATH="${GOPATH##go version go}"
-    if [[ -n $GOPATH ]]; then
-        export GOPATH="$HOME/.go/v${GOPATH%% *}"
-        mkdir -p "$GOPATH/bin"
-    fi
+    export GVMGOPATH="$HOME/.go"
+    export PATH="$GOROOT/bin:$GOPATH/bin${PATH:+:$PATH}"
 fi
 
 # Perl
