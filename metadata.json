@@ -177,6 +177,7 @@
       "cronie",
       "ctags",
       "curl",
+      "dhcpcd",
       "dnsmasq",
       "exfat-utils",
       "expect",
