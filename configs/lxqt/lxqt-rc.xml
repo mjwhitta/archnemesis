@@ -246,9 +246,9 @@
       <action name="Execute">
         <startupnotify>
           <enabled>true</enabled>
-          <name>Leafpad</name>
+          <name>Mousepad</name>
         </startupnotify>
-        <command>leafpad</command>
+        <command>mousepad</command>
       </action>
     </keybind>
     <keybind key="Mod4-f">
