@@ -7,16 +7,16 @@
 
 # Start agent if needed
 mkdir -p "$HOME/.ssh"
-[[ -f "$HOME/.ssh/agent" ]] || ssh-agent >"$HOME/.ssh/agent"
-. "$HOME/.ssh/agent" >/dev/null
+[[ -f "$HOME/.ssh/agentrc" ]] || ssh-agent >"$HOME/.ssh/agentrc"
+. "$HOME/.ssh/agentrc" >/dev/null
 
 # If PID exists but SSH_AUTH_SOCK doesn't, then restart agent. If
 # PID doesn't exist, try to start agent again.
 pidchk="$(pgrep -af "ssh-agent" | grep -s "$SSH_AGENT_PID")"
 if [[ -z $pidchk ]] || [[ ! -e "$SSH_AUTH_SOCK" ]]; then
     [[ -z $pidchk ]] || ssh-agent -k 2>/dev/null
-    ssh-agent >"$HOME/.ssh/agent"
-    . "$HOME/.ssh/agent" >/dev/null
+    ssh-agent >"$HOME/.ssh/agentrc"
+    . "$HOME/.ssh/agentrc" >/dev/null
 fi
 unset pidchk
 
