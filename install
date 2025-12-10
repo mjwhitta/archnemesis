@@ -62,7 +62,10 @@ json_get() {
         while read -r replace; do
             new="${replace#\{\{\{}"
             new="${new%\}\}\}}"
-            default="${new##*:-}"
+            case "$new" in
+                *":-"*) default="${new##*:-}" ;;
+                *) unset default ;;
+            esac
             new="$(var "${new%:-*}")"
             [[ -n $new ]] || new="$default"
             line="${line//$replace/$new}"
@@ -504,7 +507,7 @@ EOF
 
         # Configure initial ~/.ssh
         subinfo "Configuring ssh for $name"
-        mkdir -p "$uhome/.ssh"
+        mkdir -p "$uhome/.ssh/mux"
 
         # authorized_keys
         array ".users[$idx].authorized_keys" \
