@@ -81,12 +81,13 @@ hash_keys() { json_get "$1|keys[]"; }
 run_in_chroot() {
     cat >/mnt/chroot_cmd <<EOF
 #!/usr/bin/env bash
+${2:+export HOME="/home/$2"}
 $1
 exit \$?
 EOF
     chmod 777 /mnt/chroot_cmd
 
-    arch-chroot -S ${2:+-u $2} /mnt /chroot_cmd || errx "$?" "$1"
+    arch-chroot ${2:+-u $2} /mnt /chroot_cmd || errx "$?" "$1"
 
     rm -f /mnt/chroot_cmd
 }
@@ -535,7 +536,7 @@ customize() {
         read -p "Open shell for final customizations? (y/N) " -r ans
         case "${ans,,}" in
             ""|"n"|"no") break ;;
-            "y"|"yes") arch-chroot -S /mnt; break ;;
+            "y"|"yes") arch-chroot /mnt; break ;;
         esac
     done
 }
