@@ -685,11 +685,11 @@ install_configure_enable_ssh() {
 
     # Update sshd_config
     subinfo "Configuring sshd"
+    rm -f /mnt/etc/ssh/sshd_config.d/10-local.conf
     while read -r k; do
         v="$(json_get ".ssh.sshd_config.$k")"
         [[ -n $v ]] || continue
-        sed -i -r "s|^#?($k) .*|\\1 $v|" /mnt/etc/ssh/sshd_config || \
-            errx "$?" "failed to set ssh option $k"
+        echo "$k $v" >>/mnt/etc/ssh/sshd_config.d/10-local.conf
     done < <(hash_keys ".ssh.sshd_config"); unset k
 
     # Enable service
