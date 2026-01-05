@@ -431,8 +431,10 @@ configure_enable_networking() {
     ln -f -s /run/systemd/resolve/resolv.conf /mnt/etc/
 
     # Enable services
-    if [[ -z $(boolean graphical) ]]; then
+    if [[ -n $(boolean graphical) ]]; then
         # Network Manager is preferred in graphical installs
+        run_in_chroot "systemctl disable systemd-networkd"
+    else
         run_in_chroot "systemctl enable systemd-networkd"
     fi
 
