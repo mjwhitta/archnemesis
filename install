@@ -302,6 +302,7 @@ configure_archnemesis() {
         run_in_chroot \
             "/usr/local/bin/arTTY -c --fit -p -s --save linux-arch" \
             "$name"
+        sed -i "s/light_blue/magenta/" "$ucfg/arTTY/rc"
 
         # bash/zsh
         subinfo "Configuring bash/zsh for $name"

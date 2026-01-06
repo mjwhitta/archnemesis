@@ -661,3 +661,5 @@ if [[ -f "$HOME/.config/shell/security" ]]; then
     . "$HOME/.config/shell/security"
 fi
 # }}}
+
+[[ -z $(command -v arTTY) ]] || arTTY
