@@ -749,10 +749,20 @@ install_packages() {
         done < <(array ".packages.nemesis_tools"); unset pkg
     fi
 
-    # Will need git for yay-bin
-    run_in_chroot "pacman --needed --noconfirm -S git ${pkgs[*]}"
+    if [[ ${#pkgs[@]} -gt 0 ]]; then
+        run_in_chroot "pacman --needed --noconfirm -S ${pkgs[*]}"
+    fi
+}
+
+# AUR is too risky, skip
+install_packages_aur() {
+    local pkg
+    local -a pkgs
 
     info "Installing yay-bin from AUR"
+
+    # Will need git for yay-bin
+    run_in_chroot "pacman --needed --noconfirm -S git"
 
     # Install yay-bin
     run_in_chroot \
@@ -763,15 +773,10 @@ install_packages() {
         sudo -u nobody makepkg -c --needed -r -s && \
         pacman --noconfirm -U ./*.zst"
     run_in_chroot "yay --askyesremovemake --editmenu -P --save"
-}
-
-install_packages_aur() {
-    local pkg
-    local -a pkgs
 
     info "Installing user requested AUR packages"
 
-    # Install AUR packages with RuAUR
+    # Install AUR packages with Yay
     while read -r pkg; do
         pkgs+=("$pkg")
     done < <(array ".packages.aur.default"); unset pkg
@@ -779,7 +784,7 @@ install_packages_aur() {
     if [[ -n $(boolean graphical) ]]; then
         while read -r pkg; do
             pkgs+=("$pkg")
-        done < <(array ".packages.aur.gui"); unset pkg
+        done < <(array ".packages.aur.graphical"); unset pkg
     fi
 
     if [[ -n $(boolean nemesis_tools) ]]; then
@@ -1049,6 +1054,7 @@ fi
 enable_color
 enable_multilib
 install_packages
+#install_packages_aur
 create_and_configure_users
 configure_archnemesis
 customize
