@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<openbox_config xmlns="http://openbox.org/3.4/rc" xmlns:xi="http://www.w3.org/2001/XInclude">
+<openbox_config
+  xmlns="http://openbox.org/3.4/rc"
+  xmlns:xi="http://www.w3.org/2001/XInclude"
+>
   <applications>
   </applications>
   <desktops>
@@ -650,7 +653,9 @@
         <action name="Move"/>
       </mousebind>
     </context>
-    <context name="Titlebar Top Right Bottom Left TLCorner TRCorner BRCorner BLCorner">
+    <context
+      name="Titlebar Top Right Bottom Left TLCorner TRCorner BRCorner BLCorner"
+    >
       <mousebind action="Press" button="Left">
         <action name="Focus"/>
         <action name="Raise"/>
